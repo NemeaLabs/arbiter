@@ -1,0 +1,112 @@
+# AI Vulnerability Triage — Phase 2
+#
+# Runs on every PR. Steps:
+#   1. Checkout with full history (needed for --baseline-commit).
+#   2. Install Semgrep + the triage CLI's one dependency.
+#   3. Run Semgrep against the PR and triage each finding with Claude.
+#   4. Post the Markdown summary as a PR comment (updates on re-runs).
+#   5. Fail the build if a high-severity true positive is detected with
+#      high confidence, so reviewers can't accidentally merge past it.
+#
+# Required repo secret: ANTHROPIC_API_KEY
+#
+# To install on your own repo:
+#   1. Copy this file to `.github/workflows/ai-triage.yml`.
+#   2. Copy the `triage-cli/` directory into the repo root (or adjust
+#      paths below if you'd rather install it as a package).
+#   3. Add ANTHROPIC_API_KEY under Settings → Secrets and variables → Actions.
+
+name: AI Vulnerability Triage
+
+on:
+  pull_request:
+    # Restrict to whichever default branches you use.
+    branches: [main, master]
+    # Skip noise: don't re-run on every push to the same PR unless the
+    # code actually changed.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+
+# Ensure only the latest run for a given PR is kept in-flight.
+concurrency:
+  group: ai-triage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    # Needed to post the PR comment.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          # `--baseline-commit` needs access to the merge base, so we need
+          # history. `fetch-depth: 0` pulls everything; if your repo is
+          # huge, use `fetch-depth: 50` and expand as needed.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install triage dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r triage-cli/requirements.txt
+          pip install semgrep
+
+      - name: Resolve PR base SHA
+        id: base
+        run: |
+          echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Semgrep + Claude triage on PR changes
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # We don't fail here even if the gate trips — we want the PR
+        # comment posted first, then a separate step sets the build status.
+        # Saving exit code to a file and re-using it below.
+        run: |
+          set +e
+          python triage-cli/triage.py . \
+            --baseline "${{ steps.base.outputs.sha }}" \
+            --out report \
+            --fail-on high-tp
+          echo "exit_code=$?" >> "$GITHUB_ENV"
+          set -e
+
+      - name: Ensure report exists
+        # If the triage step failed before writing a report (e.g. API key
+        # missing) we still want a comment explaining that, not silence.
+        run: |
+          if [ ! -f report.md ]; then
+            {
+              echo "<!-- ai-triage-report -->"
+              echo "# AI Triage Report"
+              echo ""
+              echo "The triage job did not produce a report. Check the job logs."
+            } > report.md
+          fi
+
+      - name: Post / update PR comment
+        # Sticky comments: the `header` tag is how this action finds the
+        # prior comment and edits it in place rather than posting a new one
+        # on every push.
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: ai-triage
+          path: report.md
+
+      - name: Fail the check if gate tripped
+        if: env.exit_code != '0'
+        run: |
+          echo "AI triage detected at least one high-confidence true positive."
+          echo "See the PR comment for details."
+          exit 1
