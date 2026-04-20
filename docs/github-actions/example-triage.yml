@@ -2,19 +2,41 @@
 #
 # Runs on every PR. Steps:
 #   1. Checkout with full history (needed for --baseline-commit).
-#   2. Install Semgrep + the triage CLI's one dependency.
-#   3. Run Semgrep against the PR and triage each finding with Claude.
+#   2. Install Semgrep + the triage CLI's dependencies.
+#   3. Run Semgrep against the PR and triage each finding with the chosen LLM.
 #   4. Post the Markdown summary as a PR comment (updates on re-runs).
 #   5. Fail the build if a high-severity true positive is detected with
 #      high confidence, so reviewers can't accidentally merge past it.
 #
-# Required repo secret: ANTHROPIC_API_KEY
+# Required repo secrets (pick one provider):
+#
+#   TRIAGE_PROVIDER = "anthropic" (default) | "azure" | "azure-openai"
+#
+#   For anthropic:
+#     ANTHROPIC_API_KEY
+#     ANTHROPIC_MODEL       (optional; default claude-sonnet-4-6)
+#
+#   For azure (Azure AI Foundry):
+#     AZURE_AI_ENDPOINT     e.g. https://<project>.services.ai.azure.com/models
+#     AZURE_AI_API_KEY
+#     AZURE_AI_MODEL        deployment name (gpt-4o, Llama-3.3-70B-Instruct, ...)
+#     AZURE_AI_API_VERSION  (optional)
+#
+#   For azure-openai (plain Azure OpenAI resource, e.g. endpoint
+#   host ends in .openai.azure.com; use this if the Foundry /models
+#   endpoint returns 404 on your resource):
+#     AZURE_AI_ENDPOINT     e.g. https://<resource>.openai.azure.com/openai/v1
+#                           (or .../openai, or the bare host - the SDK normalizes it)
+#     AZURE_AI_API_KEY
+#     AZURE_AI_MODEL        deployment name (not base model name)
+#     AZURE_AI_API_VERSION  (optional; defaults to 2024-10-21)
 #
 # To install on your own repo:
 #   1. Copy this file to `.github/workflows/ai-triage.yml`.
 #   2. Copy the `triage-cli/` directory into the repo root (or adjust
 #      paths below if you'd rather install it as a package).
-#   3. Add ANTHROPIC_API_KEY under Settings → Secrets and variables → Actions.
+#   3. Add the secrets for your chosen provider under Settings →
+#      Secrets and variables → Actions.
 
 name: AI Vulnerability Triage
 
@@ -67,9 +89,18 @@ jobs:
         run: |
           echo "sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
 
-      - name: Run Semgrep + Claude triage on PR changes
+      - name: Run Semgrep + LLM triage on PR changes
+        # Provider selection is driven entirely by env vars — see
+        # triage-cli/providers.py. Passing all vars for every provider is
+        # safe; unused ones are ignored.
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TRIAGE_PROVIDER:      ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL:      ${{ secrets.ANTHROPIC_MODEL }}
+          AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
+          AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+          AZURE_AI_API_VERSION: ${{ secrets.AZURE_AI_API_VERSION }}
         # We don't fail here even if the gate trips — we want the PR
         # comment posted first, then a separate step sets the build status.
         # Saving exit code to a file and re-using it below.
@@ -86,9 +117,9 @@ jobs:
         # If the triage step failed before writing a report (e.g. API key
         # missing) we still want a comment explaining that, not silence.
         run: |
-          if [ ! -f report.md ]; then
+          if [ \! -f report.md ]; then
             {
-              echo "<!-- ai-triage-report -->"
+              echo "<\!-- ai-triage-report -->"
               echo "# AI Triage Report"
               echo ""
               echo "The triage job did not produce a report. Check the job logs."
@@ -105,7 +136,7 @@ jobs:
           path: report.md
 
       - name: Fail the check if gate tripped
-        if: env.exit_code != '0'
+        if: env.exit_code \!= '0'
         run: |
           echo "AI triage detected at least one high-confidence true positive."
           echo "See the PR comment for details."

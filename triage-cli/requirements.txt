@@ -1,4 +1,18 @@
-# anthropic>=0.49.0 is required — earlier versions pass `proxies=` to httpx
+# anthropic>=0.49.0 is required - earlier versions pass `proxies=` to httpx
 # which httpx>=0.28 no longer accepts, so `Anthropic()` fails on construction.
 anthropic>=0.49.0
 httpx>=0.27,<1.0
+
+# Azure AI Foundry provider (TRIAGE_PROVIDER=azure). The azure-ai-inference
+# SDK is the unified Foundry client - one ChatCompletionsClient API works
+# for both OpenAI-compatible Foundry deployments (gpt-4o, gpt-5) and
+# non-OpenAI catalog models (Llama-3.3, Mistral Large, Phi-4). Requires the
+# Foundry /models inference surface to be enabled on the resource.
+azure-ai-inference>=1.0.0b9
+azure-core>=1.30.0
+
+# Azure OpenAI provider (TRIAGE_PROVIDER=azure-openai). Use when the
+# Azure resource is a plain Azure OpenAI one (hostname `.openai.azure.com`)
+# without the Foundry /models surface enabled. Works with both the classic
+# /openai/deployments/<name> and the newer /openai/v1 preview endpoints.
+openai>=1.54.0
