@@ -277,52 +277,98 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
     # Hidden marker so PR comment updaters (e.g. peter-evans/create-or-update-comment)
     # can find and replace the previous comment instead of posting a new one.
     lines.append("<!-- ai-triage-report -->")
-    lines.append(f"# AI Triage Report\n")
-    lines.append(
-        f"**{total} finding(s)** — "
-        f"{tp} true positive, {fp} false positive, {nr} needs review.\n"
-    )
+    lines.append("# AI Triage Report\n")
 
-    for verdict, emoji in [
-        ("true_positive", "!!"),
-        ("needs_review", "?"),
-        ("false_positive", "~"),
-    ]:
+    # Summary framed around the AI's *actions*, not just verdict counts.
+    # A green check with "0 TP, 1 FP" under a small header reads as
+    # "nothing happened" — but the AI actually rejected a Semgrep finding,
+    # and we want that work to be visible to a PR reviewer without
+    # scrolling.
+    summary_bits: list[str] = [f"Reviewed **{total}** Semgrep finding(s)."]
+    if tp:
+        summary_bits.append(
+            f"**{tp} confirmed** as true positive(s) — action required."
+        )
+    if fp:
+        summary_bits.append(
+            f"**{fp} rejected** as false positive(s) — Semgrep flagged these, "
+            f"but AI triage determined they are not exploitable. "
+            f"Details below for auditability."
+        )
+    if nr:
+        summary_bits.append(
+            f"**{nr} flagged for manual review** — model was unsure."
+        )
+    lines.append(" ".join(summary_bits))
+    lines.append("")
+
+    # TL;DR of rejected rules, so a skim reader can see the AI's saves
+    # without expanding every card.
+    fp_items = groups.get("false_positive", [])
+    if fp_items:
+        lines.append(
+            "> **AI rejected the following Semgrep finding(s):** " +
+            ", ".join(
+                f"`{f.rule_id}` at `{f.file_path}:{f.line_start}`"
+                for f, _ in fp_items
+            )
+        )
+        lines.append("")
+
+    # Section order: TP first (what you must fix), then FP (what the AI
+    # saved you from — always render when present), then needs-review.
+    SECTION_ORDER = [
+        ("true_positive",  "Confirmed vulnerabilities"),
+        ("false_positive", "Rejected by AI triage (false positives)"),
+        ("needs_review",   "Needs manual review"),
+    ]
+
+    for verdict, title in SECTION_ORDER:
         items = groups.get(verdict, [])
         if not items:
             continue
-        lines.append(f"## {emoji} {verdict.replace('_', ' ').title()} ({len(items)})\n")
+        lines.append(f"## {title} ({len(items)})\n")
         for f, v in items:
-            lines.append(
-                f"### `{f.rule_id}` — {f.file_path}:{f.line_start}\n"
-            )
-            lines.append(f"- **Rule message:** {f.rule_message}")
-            # Show severity change if reachability adjusted it.
-            sev_display = v.severity
-            if v.adjusted_severity and v.adjusted_severity != v.severity:
-                sev_display = f"{v.severity} -> **{v.adjusted_severity}** (adjusted by reachability)"
-            lines.append(
-                f"- **Severity:** {sev_display}   "
-                f"**Confidence:** {v.confidence:.2f}"
-            )
-            lines.append(f"- **Reasoning:** {v.reasoning}")
-            if v.suggested_fix_sketch:
-                lines.append(f"- **Fix sketch:** {v.suggested_fix_sketch}")
-            # Reachability block (only when stage-2 ran on this finding).
-            if v.reachable is not None or v.exploit_path or v.reachability_reasoning:
-                lines.append("- **Reachability:**")
-                if v.reachable is True:
-                    lines.append("  - Reachable from untrusted input: **yes**")
-                elif v.reachable is False:
-                    lines.append("  - Reachable from untrusted input: **no** (dead code or internal-only)")
-                else:
-                    # reachable is None: either module-scope intrinsic vuln,
-                    # or the LLM call genuinely couldn't decide.
-                    lines.append("  - Reachable from untrusted input: not applicable / unknown")
-                if v.exploit_path:
-                    lines.append("  - Exploit path: " + " -> ".join(f"`{p}`" for p in v.exploit_path))
-                if v.reachability_reasoning:
-                    lines.append(f"  - Reasoning: {v.reachability_reasoning}")
+            lines.append(f"### `{f.rule_id}` — {f.file_path}:{f.line_start}\n")
+            if verdict == "false_positive":
+                # Frame Semgrep vs AI so the contrast is explicit.
+                lines.append(f"- **Semgrep flagged:** {f.rule_message}")
+                lines.append(
+                    f"- **AI verdict:** false positive "
+                    f"(confidence {v.confidence:.2f})"
+                )
+                lines.append(f"- **Why rejected:** {v.reasoning}")
+            else:
+                lines.append(f"- **Rule message:** {f.rule_message}")
+                # Show severity change if reachability adjusted it.
+                sev_display = v.severity
+                if v.adjusted_severity and v.adjusted_severity != v.severity:
+                    sev_display = (
+                        f"{v.severity} -> **{v.adjusted_severity}** "
+                        f"(adjusted by reachability)"
+                    )
+                lines.append(
+                    f"- **Severity:** {sev_display}   "
+                    f"**Confidence:** {v.confidence:.2f}"
+                )
+                lines.append(f"- **Reasoning:** {v.reasoning}")
+                if v.suggested_fix_sketch:
+                    lines.append(f"- **Fix sketch:** {v.suggested_fix_sketch}")
+                # Reachability block (only when stage-2 ran on this finding).
+                if v.reachable is not None or v.exploit_path or v.reachability_reasoning:
+                    lines.append("- **Reachability:**")
+                    if v.reachable is True:
+                        lines.append("  - Reachable from untrusted input: **yes**")
+                    elif v.reachable is False:
+                        lines.append("  - Reachable from untrusted input: **no** (dead code or internal-only)")
+                    else:
+                        # reachable is None: module-scope intrinsic vuln,
+                        # or the LLM call genuinely couldn't decide.
+                        lines.append("  - Reachable from untrusted input: not applicable / unknown")
+                    if v.exploit_path:
+                        lines.append("  - Exploit path: " + " -> ".join(f"`{p}`" for p in v.exploit_path))
+                    if v.reachability_reasoning:
+                        lines.append(f"  - Reasoning: {v.reachability_reasoning}")
             lines.append("")
             lines.append("```" + f.language)
             lines.append(f.code_context)
@@ -382,7 +428,13 @@ def main() -> int:
 
     if not findings:
         print("[triage] nothing to do.", file=sys.stderr)
-        args.out.with_suffix(".md").write_text("# AI Triage Report\n\nNo findings.\n")
+        # Include the sticky marker so this comment still gets edited in
+        # place on the next run, rather than posted as a new one.
+        args.out.with_suffix(".md").write_text(
+            "<!-- ai-triage-report -->\n"
+            "# AI Triage Report\n\n"
+            "No Semgrep findings to triage on this PR.\n"
+        )
         args.out.with_suffix(".json").write_text("[]")
         return 0
 
