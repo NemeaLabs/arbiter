@@ -117,9 +117,9 @@ jobs:
         # If the triage step failed before writing a report (e.g. API key
         # missing) we still want a comment explaining that, not silence.
         run: |
-          if [ \! -f report.md ]; then
+          if [ ! -f report.md ]; then
             {
-              echo "<\!-- ai-triage-report -->"
+              echo "<!-- ai-triage-report -->"
               echo "# AI Triage Report"
               echo ""
               echo "The triage job did not produce a report. Check the job logs."
@@ -136,7 +136,7 @@ jobs:
           path: report.md
 
       - name: Fail the check if gate tripped
-        if: env.exit_code \!= '0'
+        if: env.exit_code != '0'
         run: |
           echo "AI triage detected at least one high-confidence true positive."
           echo "See the PR comment for details."
