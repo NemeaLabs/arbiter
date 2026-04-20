@@ -59,3 +59,5 @@ vibes.
 - [ ] Phase 6 — ticketing + metrics
 
 See `DEMO-PLAN.md` for the full breakdown.
+
+# re-trigger B after workflow push 1776725503
