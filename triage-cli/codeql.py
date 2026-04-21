@@ -105,12 +105,12 @@ def find_or_create_alert_issue(
 ) -> int:
     """Return the GitHub Issue number for this CodeQL alert, creating one if needed.
 
-    Issues are identified by the label `codeql-alert-{N}`. If no open issue
-    with that label exists, a new one is created and labelled.
+    Per-alert issues use the label `codeql-tracking-{N}` (distinct from the
+    `codeql-alert-{N}` labels on the summary issue used for the skip-cache).
     Requires `issues: write` permission on the token.
     """
-    label = f"codeql-alert-{alert_number}"
-    # Search for an existing open issue with this alert's label.
+    label = f"codeql-tracking-{alert_number}"
+    # Search for an existing open issue with this alert's tracking label.
     search_url = (
         f"{GITHUB_API}/repos/{repo}/issues"
         f"?labels={label}&state=open&per_page=1"
