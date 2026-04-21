@@ -94,63 +94,25 @@ def _gh_request(url: str, token: str, method: str = "GET",
         raise RuntimeError(f"GitHub API {method} {url}: HTTP {exc.code}: {body[:300]}") from exc
 
 
-def find_or_create_alert_issue(
-    repo: str,
-    token: str,
-    alert_number: int,
-    rule_id: str,
-    file_path: str,
-    line_start: int,
-    alert_html_url: str,
-) -> int:
-    """Return the GitHub Issue number for this CodeQL alert, creating one if needed.
-
-    Per-alert issues use the label `codeql-tracking-{N}` (distinct from the
-    `codeql-alert-{N}` labels on the summary issue used for the skip-cache).
-    Requires `issues: write` permission on the token.
-    """
-    label = f"codeql-tracking-{alert_number}"
-    # Search for an existing open issue with this alert's tracking label.
-    search_url = (
-        f"{GITHUB_API}/repos/{repo}/issues"
-        f"?labels={label}&state=open&per_page=1"
+def has_alert_triage_comment(repo: str, token: str, alert_number: int) -> bool:
+    """Return True if the CodeQL alert already has an AI triage comment."""
+    url = (
+        f"{GITHUB_API}/repos/{repo}/code-scanning/alerts/{alert_number}"
+        f"/comments?per_page=100"
     )
-    issues = _gh_request(search_url, token)
-    if isinstance(issues, list) and issues:
-        return int(issues[0]["number"])
-
-    # No existing issue — create one.
-    body = (
-        f"**CodeQL alert:** [{rule_id}]({alert_html_url})\n"
-        f"**Location:** `{file_path}:{line_start}`\n\n"
-        f"This issue was automatically created to track the AI triage result "
-        f"for CodeQL alert #{alert_number}."
-    )
-    new_issue = _gh_request(
-        f"{GITHUB_API}/repos/{repo}/issues",
-        token, method="POST",
-        payload={
-            "title": f"[CodeQL #{alert_number}] {rule_id} — {file_path}:{line_start}",
-            "body": body,
-            "labels": [label],
-        },
-    )
-    return int(new_issue["number"])
-
-
-def has_triage_comment(repo: str, token: str, issue_number: int) -> bool:
-    """Return True if the issue already has an AI triage comment."""
-    url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments?per_page=100"
-    comments = _gh_request(url, token)
+    try:
+        comments = _gh_request(url, token)
+    except RuntimeError:
+        return False
     if not isinstance(comments, list):
         return False
     return any(TRIAGE_COMMENT_MARKER in (c.get("body") or "") for c in comments)
 
 
-def add_triage_comment(
+def add_alert_triage_comment(
     repo: str,
     token: str,
-    issue_number: int,
+    alert_number: int,
     verdict: str,
     confidence: float,
     severity: str,
@@ -160,7 +122,7 @@ def add_triage_comment(
     exploit_path: list[str],
     reachability_reasoning: Optional[str],
 ) -> None:
-    """Post the AI triage verdict as a comment on the issue."""
+    """Post the AI triage verdict as a comment on the CodeQL alert."""
     emoji = _VERDICT_EMOJI.get(verdict, "🔍")
     verdict_label = verdict.replace("_", " ").title()
 
@@ -168,8 +130,8 @@ def add_triage_comment(
         TRIAGE_COMMENT_MARKER,
         f"## {emoji} AI Triage Verdict: {verdict_label}",
         "",
-        f"| Field | Value |",
-        f"|---|---|",
+        "| Field | Value |",
+        "|---|---|",
         f"| **Verdict** | {verdict_label} |",
         f"| **Confidence** | {confidence:.0%} |",
         f"| **Severity** | {severity} |",
@@ -193,7 +155,7 @@ def add_triage_comment(
             lines.append(f"- {reachability_reasoning}")
 
     _gh_request(
-        f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments",
+        f"{GITHUB_API}/repos/{repo}/code-scanning/alerts/{alert_number}/comments",
         token, method="POST",
         payload={"body": "\n".join(lines)},
     )

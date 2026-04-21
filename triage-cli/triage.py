@@ -471,11 +471,10 @@ def main() -> int:
                          "GitHub API. Requires security-events:write on GITHUB_TOKEN. "
                          "Only meaningful with --backlog.")
     ap.add_argument("--post-comments", action="store_true",
-                    help="After triage, create a GitHub Issue per alert (if one does "
-                         "not already exist) and post the AI verdict as a comment. "
-                         "Skips alerts whose issue already has an AI triage comment. "
-                         "Requires issues:write on GITHUB_TOKEN. Only meaningful with "
-                         "--backlog.")
+                    help="After triage, post the AI verdict as a comment directly on "
+                         "each CodeQL alert. Skips alerts that already have an AI "
+                         "triage comment. Requires security-events:write on "
+                         "GITHUB_TOKEN. Only meaningful with --backlog.")
     args = ap.parse_args()
 
     # ---- Backlog mode: fetch all open CodeQL alerts, skip Semgrep ----
@@ -501,33 +500,15 @@ def main() -> int:
         except RuntimeError as exc:
             sys.exit(f"[codeql] failed: {exc}")
 
-        # alert_issue_map: alert_number -> GitHub Issue number, pre-populated
-        # when --post-comments drives skip logic via comment presence.
-        alert_issue_map: dict[int, int] = {}
-
         if args.post_comments:
-            # When posting comments, the skip signal is whether the issue
-            # already has an AI triage comment — not the label skip-cache.
-            # This ensures alerts triaged in a prior run (without --post-comments)
-            # still get their comment posted.
+            # Skip signal: whether the alert already has an AI triage comment.
             filtered: list[dict] = []
             for a in raw_alerts:
                 n = int(a.get("number") or 0)
                 if not n:
                     continue
-                rule_id = (a.get("rule") or {}).get("id", "")
-                inst    = (a.get("most_recent_instance") or {}).get("location") or {}
-                fp      = str(inst.get("path") or "")
-                ls      = int(inst.get("start_line") or 1)
                 try:
-                    inum = _codeql.find_or_create_alert_issue(
-                        repo=args.github_repo, token=github_token,
-                        alert_number=n, rule_id=rule_id,
-                        file_path=fp, line_start=ls,
-                        alert_html_url=a.get("html_url", ""),
-                    )
-                    alert_issue_map[n] = inum
-                    if _codeql.has_triage_comment(args.github_repo, github_token, inum):
+                    if _codeql.has_alert_triage_comment(args.github_repo, github_token, n):
                         print(f"[comments] #{n} already commented, skipping", file=sys.stderr)
                         continue
                 except RuntimeError as exc:
@@ -570,14 +551,6 @@ def main() -> int:
         print(f"[triage] calling {provider.name}:{provider.model} on "
               f"{len(findings)} finding(s) with concurrency={args.concurrency} ...",
               file=sys.stderr)
-
-        # Keep a mapping from Finding back to its raw alert for dismissal.
-        alert_by_key: dict[tuple[str, int, int], dict] = {}
-        for a in raw_alerts:
-            inst = (a.get("most_recent_instance") or {}).get("location") or {}
-            key = (str(inst.get("path") or ""), int(inst.get("start_line") or 1),
-                   int(inst.get("end_line") or inst.get("start_line") or 1))
-            alert_by_key[key] = a
 
         pairs: list[tuple[Finding, Verdict]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
@@ -641,30 +614,15 @@ def main() -> int:
                     print(f"[dismiss] warning: {exc}", file=sys.stderr)
 
         if args.post_comments:
-            print("[comments] posting triage verdicts to GitHub Issues ...", file=sys.stderr)
+            print("[comments] posting triage verdicts to CodeQL alerts ...", file=sys.stderr)
             for f, v in pairs:
                 if f.codeql_alert_number is None:
                     continue
-                # issue number was resolved during the pre-flight skip check;
-                # fall back to find_or_create only if map is missing the entry.
                 try:
-                    issue_num = alert_issue_map.get(f.codeql_alert_number)
-                    if issue_num is None:
-                        raw_a = next(
-                            (a for a in raw_alerts if a.get("number") == f.codeql_alert_number),
-                            {}
-                        )
-                        issue_num = _codeql.find_or_create_alert_issue(
-                            repo=args.github_repo, token=github_token,
-                            alert_number=f.codeql_alert_number,
-                            rule_id=f.rule_id, file_path=f.file_path,
-                            line_start=f.line_start,
-                            alert_html_url=raw_a.get("html_url", ""),
-                        )
-                    _codeql.add_triage_comment(
+                    _codeql.add_alert_triage_comment(
                         repo=args.github_repo,
                         token=github_token,
-                        issue_number=issue_num,
+                        alert_number=f.codeql_alert_number,
                         verdict=v.verdict,
                         confidence=v.confidence,
                         severity=v.effective_severity,
@@ -675,7 +633,7 @@ def main() -> int:
                         reachability_reasoning=v.reachability_reasoning,
                     )
                     print(
-                        f"[comments] #{f.codeql_alert_number} → issue #{issue_num}  {v.verdict}",
+                        f"[comments] #{f.codeql_alert_number}  {v.verdict}",
                         file=sys.stderr,
                     )
                 except RuntimeError as exc:
