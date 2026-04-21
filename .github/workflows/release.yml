@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          make_latest: true
+
+      - name: Move floating tags
+        # Keeps v1 and v1.2 pointing at the latest patch so users
+        # pinned to @v1 get fixes without changing their workflow.
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. v1.2.3
+          MAJOR="${TAG%%.*}"                # v1
+          MINOR="${TAG%.*}"                 # v1.2
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          for FLOATING in "$MAJOR" "$MINOR"; do
+            git tag -fa "$FLOATING" -m "Release $TAG"
+            git push origin "$FLOATING" --force
+          done

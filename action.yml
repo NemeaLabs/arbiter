@@ -1,0 +1,164 @@
+name: 'Arbiter'
+description: 'AI-powered SAST finding triage with reachability analysis'
+author: 'NemeaLabs'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  mode:
+    description: 'Run mode: pr or backlog'
+    required: false
+    default: 'pr'
+  target:
+    description: 'Path to scan (default: repo root)'
+    required: false
+    default: '.'
+  github-token:
+    description: 'GitHub token (needs security-events:read, issues:write for backlog)'
+    required: true
+  github-repo:
+    description: 'Repository as owner/repo (defaults to current repo)'
+    required: false
+    default: ${{ github.repository }}
+
+  # LLM provider
+  anthropic-api-key:
+    description: 'Anthropic API key'
+    required: false
+  triage-provider:
+    description: 'LLM provider: anthropic (default) or azure'
+    required: false
+    default: 'anthropic'
+  anthropic-model:
+    description: 'Anthropic model override'
+    required: false
+  azure-ai-endpoint:
+    description: 'Azure AI Foundry endpoint'
+    required: false
+  azure-ai-api-key:
+    description: 'Azure AI API key'
+    required: false
+  azure-ai-model:
+    description: 'Azure AI model/deployment name'
+    required: false
+  azure-ai-api-version:
+    description: 'Azure AI API version'
+    required: false
+
+  # PR mode
+  baseline:
+    description: 'Base commit SHA to diff against (PR mode)'
+    required: false
+  scanners:
+    description: 'Comma-separated scanners to run: semgrep, codeql'
+    required: false
+    default: 'semgrep'
+  github-ref:
+    description: 'PR head ref for CodeQL alert lookup (e.g. refs/pull/N/head)'
+    required: false
+  fail-on:
+    description: 'Fail the step when findings match: any-tp or high-tp'
+    required: false
+
+  # Backlog mode
+  skip-alerts:
+    description: 'Comma-separated CodeQL alert numbers to skip (already triaged)'
+    required: false
+    default: ''
+  dismiss-fps:
+    description: 'Auto-dismiss AI-confirmed false positive alerts (requires security-events:write)'
+    required: false
+    default: 'false'
+  post-comments:
+    description: 'Post per-alert verdict comments on the summary issue'
+    required: false
+    default: 'false'
+  summary-issue:
+    description: 'Summary issue number for per-alert comments (backlog mode)'
+    required: false
+
+  # Shared
+  out:
+    description: 'Output report file prefix (produces <prefix>.md and <prefix>.json)'
+    required: false
+    default: 'arbiter-report'
+  no-reachability:
+    description: 'Skip the Phase 3 reachability analysis pass'
+    required: false
+    default: 'false'
+  concurrency:
+    description: 'Number of parallel LLM triage calls'
+    required: false
+    default: '4'
+
+outputs:
+  report-md:
+    description: 'Path to the generated Markdown report'
+    value: ${{ steps.run.outputs.report_md }}
+  report-json:
+    description: 'Path to the generated JSON report'
+    value: ${{ steps.run.outputs.report_json }}
+  exit-code:
+    description: 'Arbiter exit code (0 = pass, 1 = fail-on gate triggered)'
+    value: ${{ steps.run.outputs.exit_code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: pip
+        cache-dependency-path: ${{ github.action_path }}/triage-cli/requirements.txt
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        pip install -r "${{ github.action_path }}/triage-cli/requirements.txt"
+        if [[ "${{ inputs.mode }}" == "pr" ]] || [[ "${{ inputs.scanners }}" == *"semgrep"* ]]; then
+          pip install semgrep
+        fi
+
+    - name: Run arbiter
+      id: run
+      shell: bash
+      env:
+        GITHUB_TOKEN:         ${{ inputs.github-token }}
+        ANTHROPIC_API_KEY:    ${{ inputs.anthropic-api-key }}
+        ANTHROPIC_MODEL:      ${{ inputs.anthropic-model }}
+        TRIAGE_PROVIDER:      ${{ inputs.triage-provider }}
+        AZURE_AI_ENDPOINT:    ${{ inputs.azure-ai-endpoint }}
+        AZURE_AI_API_KEY:     ${{ inputs.azure-ai-api-key }}
+        AZURE_AI_MODEL:       ${{ inputs.azure-ai-model }}
+        AZURE_AI_API_VERSION: ${{ inputs.azure-ai-api-version }}
+      run: |
+        set +e
+
+        ARGS=("${{ inputs.target }}" "--out" "${{ inputs.out }}" "--concurrency" "${{ inputs.concurrency }}")
+
+        if [[ "${{ inputs.mode }}" == "backlog" ]]; then
+          ARGS+=("--backlog" "--github-repo" "${{ inputs.github-repo }}")
+          [[ -n "${{ inputs.skip-alerts }}" ]]   && ARGS+=("--skip-alerts"   "${{ inputs.skip-alerts }}")
+          [[ -n "${{ inputs.summary-issue }}" ]] && ARGS+=("--summary-issue" "${{ inputs.summary-issue }}")
+          [[ "${{ inputs.dismiss-fps }}"    == "true" ]] && ARGS+=("--dismiss-fps")
+          [[ "${{ inputs.post-comments }}"  == "true" ]] && ARGS+=("--post-comments")
+        else
+          ARGS+=("--scanners" "${{ inputs.scanners }}" "--github-repo" "${{ inputs.github-repo }}")
+          [[ -n "${{ inputs.baseline }}"   ]] && ARGS+=("--baseline"    "${{ inputs.baseline }}")
+          [[ -n "${{ inputs.github-ref }}" ]] && ARGS+=("--github-ref"  "${{ inputs.github-ref }}")
+          [[ -n "${{ inputs.fail-on }}"    ]] && ARGS+=("--fail-on"     "${{ inputs.fail-on }}")
+        fi
+
+        [[ "${{ inputs.no-reachability }}" == "true" ]] && ARGS+=("--no-reachability")
+
+        python "${{ github.action_path }}/triage-cli/triage.py" "${ARGS[@]}"
+        EXIT_CODE=$?
+
+        echo "exit_code=$EXIT_CODE"   >> "$GITHUB_OUTPUT"
+        echo "report_md=${{ inputs.out }}.md"   >> "$GITHUB_OUTPUT"
+        echo "report_json=${{ inputs.out }}.json" >> "$GITHUB_OUTPUT"
+
+        exit $EXIT_CODE
