@@ -65,6 +65,140 @@ def run_codeql_alerts(
     return alerts
 
 
+TRIAGE_COMMENT_MARKER = "<!-- ai-triage-verdict -->"
+
+_VERDICT_EMOJI = {
+    "true_positive": "🔴",
+    "false_positive": "✅",
+    "needs_review": "🔍",
+}
+
+
+def _gh_request(url: str, token: str, method: str = "GET",
+                payload: Optional[dict] = None) -> dict | list:
+    data = json.dumps(payload).encode() if payload else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            **({"Content-Type": "application/json"} if data else {}),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise RuntimeError(f"GitHub API {method} {url}: HTTP {exc.code}: {body[:300]}") from exc
+
+
+def find_or_create_alert_issue(
+    repo: str,
+    token: str,
+    alert_number: int,
+    rule_id: str,
+    file_path: str,
+    line_start: int,
+    alert_html_url: str,
+) -> int:
+    """Return the GitHub Issue number for this CodeQL alert, creating one if needed.
+
+    Issues are identified by the label `codeql-alert-{N}`. If no open issue
+    with that label exists, a new one is created and labelled.
+    Requires `issues: write` permission on the token.
+    """
+    label = f"codeql-alert-{alert_number}"
+    # Search for an existing open issue with this alert's label.
+    search_url = (
+        f"{GITHUB_API}/repos/{repo}/issues"
+        f"?labels={label}&state=open&per_page=1"
+    )
+    issues = _gh_request(search_url, token)
+    if isinstance(issues, list) and issues:
+        return int(issues[0]["number"])
+
+    # No existing issue — create one.
+    body = (
+        f"**CodeQL alert:** [{rule_id}]({alert_html_url})\n"
+        f"**Location:** `{file_path}:{line_start}`\n\n"
+        f"This issue was automatically created to track the AI triage result "
+        f"for CodeQL alert #{alert_number}."
+    )
+    new_issue = _gh_request(
+        f"{GITHUB_API}/repos/{repo}/issues",
+        token, method="POST",
+        payload={
+            "title": f"[CodeQL #{alert_number}] {rule_id} — {file_path}:{line_start}",
+            "body": body,
+            "labels": [label],
+        },
+    )
+    return int(new_issue["number"])
+
+
+def has_triage_comment(repo: str, token: str, issue_number: int) -> bool:
+    """Return True if the issue already has an AI triage comment."""
+    url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments?per_page=100"
+    comments = _gh_request(url, token)
+    if not isinstance(comments, list):
+        return False
+    return any(TRIAGE_COMMENT_MARKER in (c.get("body") or "") for c in comments)
+
+
+def add_triage_comment(
+    repo: str,
+    token: str,
+    issue_number: int,
+    verdict: str,
+    confidence: float,
+    severity: str,
+    reasoning: str,
+    fix_sketch: Optional[str],
+    reachable: Optional[bool],
+    exploit_path: list[str],
+    reachability_reasoning: Optional[str],
+) -> None:
+    """Post the AI triage verdict as a comment on the issue."""
+    emoji = _VERDICT_EMOJI.get(verdict, "🔍")
+    verdict_label = verdict.replace("_", " ").title()
+
+    lines = [
+        TRIAGE_COMMENT_MARKER,
+        f"## {emoji} AI Triage Verdict: {verdict_label}",
+        "",
+        f"| Field | Value |",
+        f"|---|---|",
+        f"| **Verdict** | {verdict_label} |",
+        f"| **Confidence** | {confidence:.0%} |",
+        f"| **Severity** | {severity} |",
+        "",
+        f"**Reasoning:** {reasoning}",
+    ]
+    if fix_sketch:
+        lines += ["", f"**Fix sketch:** {fix_sketch}"]
+    if reachable is not None or exploit_path or reachability_reasoning:
+        lines.append("")
+        lines.append("**Reachability analysis:**")
+        if reachable is True:
+            lines.append("- Reachable from untrusted input: **yes**")
+        elif reachable is False:
+            lines.append("- Reachable from untrusted input: **no** (dead code or internal-only)")
+        else:
+            lines.append("- Reachable from untrusted input: not applicable / unknown")
+        if exploit_path:
+            lines.append("- Exploit path: " + " → ".join(f"`{p}`" for p in exploit_path))
+        if reachability_reasoning:
+            lines.append(f"- {reachability_reasoning}")
+
+    _gh_request(
+        f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments",
+        token, method="POST",
+        payload={"body": "\n".join(lines)},
+    )
+
+
 def dismiss_alert(
     repo: str,
     token: str,

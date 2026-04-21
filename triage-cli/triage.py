@@ -470,6 +470,12 @@ def main() -> int:
                     help="After triage, dismiss FP-verdicted CodeQL alerts via the "
                          "GitHub API. Requires security-events:write on GITHUB_TOKEN. "
                          "Only meaningful with --backlog.")
+    ap.add_argument("--post-comments", action="store_true",
+                    help="After triage, create a GitHub Issue per alert (if one does "
+                         "not already exist) and post the AI verdict as a comment. "
+                         "Skips alerts whose issue already has an AI triage comment. "
+                         "Requires issues:write on GITHUB_TOKEN. Only meaningful with "
+                         "--backlog.")
     args = ap.parse_args()
 
     # ---- Backlog mode: fetch all open CodeQL alerts, skip Semgrep ----
@@ -595,6 +601,53 @@ def main() -> int:
                     print(f"[dismiss] #{f.codeql_alert_number} {f.rule_id}", file=sys.stderr)
                 except RuntimeError as exc:
                     print(f"[dismiss] warning: {exc}", file=sys.stderr)
+
+        if args.post_comments:
+            print(f"[comments] posting triage verdicts to GitHub Issues ...", file=sys.stderr)
+            for f, v in pairs:
+                if f.codeql_alert_number is None:
+                    continue
+                # Find the raw alert to get its html_url.
+                raw = next(
+                    (a for a in raw_alerts if a.get("number") == f.codeql_alert_number),
+                    {}
+                )
+                alert_html_url = raw.get("html_url", "")
+                try:
+                    issue_num = _codeql.find_or_create_alert_issue(
+                        repo=args.github_repo,
+                        token=github_token,
+                        alert_number=f.codeql_alert_number,
+                        rule_id=f.rule_id,
+                        file_path=f.file_path,
+                        line_start=f.line_start,
+                        alert_html_url=alert_html_url,
+                    )
+                    if _codeql.has_triage_comment(args.github_repo, github_token, issue_num):
+                        print(
+                            f"[comments] #{f.codeql_alert_number} already commented, skipping",
+                            file=sys.stderr,
+                        )
+                        continue
+                    _codeql.add_triage_comment(
+                        repo=args.github_repo,
+                        token=github_token,
+                        issue_number=issue_num,
+                        verdict=v.verdict,
+                        confidence=v.confidence,
+                        severity=v.effective_severity,
+                        reasoning=v.reasoning,
+                        fix_sketch=v.suggested_fix_sketch,
+                        reachable=v.reachable,
+                        exploit_path=v.exploit_path or [],
+                        reachability_reasoning=v.reachability_reasoning,
+                    )
+                    print(
+                        f"[comments] #{f.codeql_alert_number} → issue #{issue_num}  {v.verdict}",
+                        file=sys.stderr,
+                    )
+                except RuntimeError as exc:
+                    print(f"[comments] warning: #{f.codeql_alert_number}: {exc}", file=sys.stderr)
 
         return 0
 
