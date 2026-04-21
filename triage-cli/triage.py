@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-Local Semgrep + Claude triage CLI (Phase 1 of the demo plan).
+Local Semgrep + LLM triage CLI (Phase 1 of the demo plan).
 
 Flow:
   1. Run `semgrep --config auto --json` on the target path.
   2. For each finding, extract the code window around the sink.
-  3. Ask Claude for a structured JSON verdict per finding.
+  3. Ask the configured LLM provider for a structured JSON verdict.
   4. Write a machine-readable report.json and a human-readable report.md.
+
+Providers (selected via env var `TRIAGE_PROVIDER`):
+  anthropic  — Anthropic API (default). Needs ANTHROPIC_API_KEY.
+  azure      — Azure AI Foundry via azure-ai-inference. Needs
+               AZURE_AI_ENDPOINT, AZURE_AI_API_KEY, AZURE_AI_MODEL.
+  See providers.py for the full env-var contract.
 
 Usage:
   python triage.py <target-path> [--out REPORT_PREFIX] [--model MODEL]
@@ -15,7 +21,6 @@ Usage:
 Requirements:
   pip install -r requirements.txt
   pip install semgrep
-  export ANTHROPIC_API_KEY=sk-ant-...
 """
 
 from __future__ import annotations
@@ -23,7 +28,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -31,10 +35,9 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
-from anthropic import Anthropic
-
 import reachability
 from prompts import SYSTEM_PROMPT, USER_TEMPLATE
+from providers import LLMProvider, get_provider
 
 
 CONTEXT_RADIUS = 15  # lines before and after the finding to include
@@ -110,7 +113,7 @@ def code_window(path: pathlib.Path, start: int, end: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Claude triage
+# LLM triage
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -194,7 +197,7 @@ def dedupe_findings(findings: list[Finding]) -> list[Finding]:
     return list(by_key.values())
 
 
-def triage_one(client: Anthropic, model: str, f: Finding) -> Verdict:
+def triage_one(provider: LLMProvider, f: Finding) -> Verdict:
     # If multiple rules fired on the same line, show them all to the model;
     # it's useful context and avoids hiding the union of ruleset opinions.
     rule_id_field = f.rule_id if len(f.merged_rule_ids) == 1 else \
@@ -211,21 +214,16 @@ def triage_one(client: Anthropic, model: str, f: Finding) -> Verdict:
         language=f.language,
         code_context=f.code_context,
     )
-    # Retry on transient errors.
+    # Retry on transient errors (network blips, 429s, model timeouts).
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=600,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user}],
-            )
-            text = resp.content[0].text.strip()
-            # Tolerate accidental ``` fences.
+            text = provider.chat(
+                system=SYSTEM_PROMPT, user=user, max_tokens=600,
+            ).strip()
+            # Tolerate accidental ``` fences (some models wrap JSON).
             if text.startswith("```"):
                 text = text.strip("`")
-                # drop an optional "json" language tag on the first line
                 if text.lower().startswith("json"):
                     text = text[4:]
                 text = text.strip()
@@ -385,12 +383,15 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Semgrep + Claude triage")
+    ap = argparse.ArgumentParser(description="Semgrep + LLM triage")
     ap.add_argument("target", type=pathlib.Path, help="Path to scan.")
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("report"),
                     help="Output prefix (produces <prefix>.json and <prefix>.md).")
-    ap.add_argument("--model", default="claude-sonnet-4-6",
-                    help="Anthropic model to use.")
+    ap.add_argument("--model", default=None,
+                    help="Anthropic model to use (overrides ANTHROPIC_MODEL "
+                         "env; ignored for non-Anthropic providers, which "
+                         "take the deployment/model name from their own "
+                         "env vars — see providers.py).")
     ap.add_argument("--max", type=int, default=0,
                     help="Max findings to triage (0 = all).")
     ap.add_argument("--concurrency", type=int, default=4,
@@ -409,8 +410,12 @@ def main() -> int:
                     help="Skip the Phase 3 reachability pass.")
     args = ap.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("ANTHROPIC_API_KEY is not set.")
+    # Build the provider FIRST so configuration errors (missing keys, bad
+    # endpoint, unknown provider) surface before we spend time running
+    # Semgrep across the repo.
+    provider = get_provider(anthropic_model_cli=args.model)
+    print(f"[triage] provider={provider.name} model={provider.model}",
+          file=sys.stderr)
 
     target = args.target.resolve()
     findings_raw = run_semgrep(target, baseline=args.baseline)
@@ -438,24 +443,13 @@ def main() -> int:
         args.out.with_suffix(".json").write_text("[]")
         return 0
 
-    try:
-        client = Anthropic()
-    except TypeError as exc:
-        if "proxies" in str(exc):
-            sys.exit(
-                "Incompatible anthropic SDK / httpx versions detected.\n"
-                "Fix with:  pip install --upgrade anthropic\n"
-                "Fallback:  pip install 'httpx<0.28'\n"
-                f"(original error: {exc})"
-            )
-        raise
-
-    print(f"[triage] calling {args.model} on {len(findings)} finding(s) with "
-          f"concurrency={args.concurrency} ...", file=sys.stderr)
+    print(f"[triage] calling {provider.name}:{provider.model} on "
+          f"{len(findings)} finding(s) with concurrency={args.concurrency} ...",
+          file=sys.stderr)
 
     pairs: list[tuple[Finding, Verdict]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
-        futures = {ex.submit(triage_one, client, args.model, f): f for f in findings}
+        futures = {ex.submit(triage_one, provider, f): f for f in findings}
         for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             f = futures[fut]
             v = fut.result()
@@ -485,7 +479,7 @@ def main() -> int:
                 if not abs_path.is_absolute():
                     abs_path = (target / abs_path).resolve()
                 r = reachability.analyze(
-                    client=client, model=args.model,
+                    provider=provider,
                     repo_root=target, sink_file=abs_path,
                     sink_line=f.line_start, sink_code=f.code_context,
                 )

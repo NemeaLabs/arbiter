@@ -1,7 +1,7 @@
 """Phase 3: cross-file reachability analysis.
 
 For each finding that Phase 1 classified as a true positive, walk the
-caller graph upward (up to a fixed depth) and ask Claude whether untrusted
+caller graph upward (up to a fixed depth) and ask the LLM whether untrusted
 input can actually reach the sink.
 
 This is where AI earns its keep over raw Semgrep: Semgrep's free tier does
@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from anthropic import Anthropic
+from providers import LLMProvider
 
 
 SOURCE_GLOBS = ("*.py", "*.js", "*.ts", "*.jsx", "*.tsx")
@@ -278,8 +278,7 @@ def _format_layers(layers: list[list[CallSite]]) -> str:
 
 
 def analyze(
-    client: Anthropic,
-    model: str,
+    provider: LLMProvider,
     repo_root: pathlib.Path,
     sink_file: pathlib.Path,
     sink_line: int,
@@ -316,13 +315,9 @@ def analyze(
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=600,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user}],
-            )
-            text = resp.content[0].text.strip()
+            text = provider.chat(
+                system=_SYSTEM_PROMPT, user=user, max_tokens=600,
+            ).strip()
             if text.startswith("```"):
                 text = text.strip("`")
                 if text.lower().startswith("json"):
