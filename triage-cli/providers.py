@@ -76,7 +76,7 @@ class LLMProvider(Protocol):
     name: str      # short identifier for logs, e.g. "anthropic" / "azure"
     model: str     # model / deployment name, for logs & reports
 
-    def chat(self, system: str, user: str, max_tokens: int = 600) -> str:
+    def chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
         """Send a single-turn message. Return the assistant's text content."""
         ...
 
@@ -112,7 +112,7 @@ class AnthropicProvider:
                 ) from exc
             raise
 
-    def chat(self, system: str, user: str, max_tokens: int = 600) -> str:
+    def chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -163,7 +163,7 @@ class AzureAIFoundryProvider:
             kwargs["api_version"] = api_version
         self._client = ChatCompletionsClient(**kwargs)
 
-    def chat(self, system: str, user: str, max_tokens: int = 600) -> str:
+    def chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
         from azure.ai.inference.models import SystemMessage, UserMessage
         resp = self._client.complete(
             messages=[
@@ -230,7 +230,7 @@ class AzureOpenAIProvider:
             api_version=api_version or self._DEFAULT_API_VERSION,
         )
 
-    def chat(self, system: str, user: str, max_tokens: int = 600) -> str:
+    def chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
         # o-series reasoning models (o1, o3, o4-mini, etc.) require
         # max_completion_tokens; standard models accept both names.
         resp = self._client.chat.completions.create(

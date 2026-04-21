@@ -219,7 +219,7 @@ def triage_one(provider: LLMProvider, f: Finding) -> Verdict:
     for attempt in range(3):
         try:
             text = provider.chat(
-                system=SYSTEM_PROMPT, user=user, max_tokens=600,
+                system=SYSTEM_PROMPT, user=user, max_tokens=2000,
             ).strip()
             # Tolerate accidental ``` fences (some models wrap JSON).
             if text.startswith("```"):

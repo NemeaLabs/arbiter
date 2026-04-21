@@ -316,7 +316,7 @@ def analyze(
     for attempt in range(3):
         try:
             text = provider.chat(
-                system=_SYSTEM_PROMPT, user=user, max_tokens=600,
+                system=_SYSTEM_PROMPT, user=user, max_tokens=2000,
             ).strip()
             if text.startswith("```"):
                 text = text.strip("`")
