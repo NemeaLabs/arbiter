@@ -231,9 +231,11 @@ class AzureOpenAIProvider:
         )
 
     def chat(self, system: str, user: str, max_tokens: int = 600) -> str:
+        # o-series reasoning models (o1, o3, o4-mini, etc.) require
+        # max_completion_tokens; standard models accept both names.
         resp = self._client.chat.completions.create(
             model=self.model,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
