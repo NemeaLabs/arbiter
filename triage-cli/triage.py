@@ -129,7 +129,8 @@ class Finding:
     code_context: str
     language: str
     merged_rule_ids: list[str]  # all rules that fired at (file, line_start, line_end)
-    scanner: str = "semgrep"   # "semgrep" or "codeql"
+    scanner: str = "semgrep"            # "semgrep" or "codeql"
+    codeql_alert_number: Optional[int] = None  # set by finding_from_codeql(); None for Semgrep
 
 
 @dataclass
@@ -206,6 +207,7 @@ def finding_from_codeql(alert: dict[str, Any], repo_root: pathlib.Path) -> Findi
         language=LANGUAGE_BY_EXT.get(ext, ""),
         merged_rule_ids=[rid],
         scanner="codeql",
+        codeql_alert_number=int(alert["number"]) if alert.get("number") else None,
     )
 
 
@@ -458,7 +460,143 @@ def main() -> int:
                     help="PR head SHA for CodeQL alert lookup. Required for codeql.")
     ap.add_argument("--github-token", default=None,
                     help="GitHub token (defaults to GITHUB_TOKEN env var).")
+    ap.add_argument("--backlog", action="store_true",
+                    help="Backlog mode: skip Semgrep, fetch ALL open CodeQL alerts "
+                         "for the repo (no --github-ref needed). Disables --fail-on.")
+    ap.add_argument("--skip-alerts", default="",
+                    help="Comma-separated CodeQL alert numbers to skip (already "
+                         "triaged). Used by the backlog workflow's skip-cache.")
+    ap.add_argument("--dismiss-fps", action="store_true",
+                    help="After triage, dismiss FP-verdicted CodeQL alerts via the "
+                         "GitHub API. Requires security-events:write on GITHUB_TOKEN. "
+                         "Only meaningful with --backlog.")
     args = ap.parse_args()
+
+    # ---- Backlog mode: fetch all open CodeQL alerts, skip Semgrep ----
+    if args.backlog:
+        github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
+        if not github_token:
+            sys.exit("--backlog requires GITHUB_TOKEN env var or --github-token.")
+        if not args.github_repo:
+            sys.exit("--backlog requires --github-repo (e.g. owner/repo).")
+
+        provider = get_provider(anthropic_model_cli=args.model)
+        print(f"[triage] provider={provider.name} model={provider.model}",
+              file=sys.stderr)
+
+        target = args.target.resolve()
+
+        print(f"[codeql] fetching ALL open alerts for {args.github_repo} ...",
+              file=sys.stderr)
+        try:
+            raw_alerts = _codeql.run_codeql_alerts(
+                repo=args.github_repo, token=github_token, ref=None,
+            )
+        except RuntimeError as exc:
+            sys.exit(f"[codeql] failed: {exc}")
+
+        # Apply skip-cache: drop alert numbers already triaged in a prior run.
+        skip_set: set[int] = set()
+        if args.skip_alerts:
+            for part in args.skip_alerts.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    skip_set.add(int(part))
+        if skip_set:
+            before_skip = len(raw_alerts)
+            raw_alerts = [a for a in raw_alerts if a.get("number") not in skip_set]
+            skipped = before_skip - len(raw_alerts)
+            print(f"[codeql] skipped {skipped} already-triaged alert(s)", file=sys.stderr)
+
+        if not raw_alerts:
+            print("[codeql] nothing new to triage.", file=sys.stderr)
+            args.out.with_suffix(".md").write_text(
+                "# AI Backlog Triage\n\n"
+                "No new CodeQL alerts to triage — all open alerts already "
+                "triaged in a previous run.\n"
+            )
+            args.out.with_suffix(".json").write_text("[]")
+            return 0
+
+        findings = dedupe_findings(
+            [finding_from_codeql(a, target) for a in raw_alerts]
+        )
+        print(f"[codeql] {len(findings)} finding(s) to triage", file=sys.stderr)
+
+        print(f"[triage] calling {provider.name}:{provider.model} on "
+              f"{len(findings)} finding(s) with concurrency={args.concurrency} ...",
+              file=sys.stderr)
+
+        # Keep a mapping from Finding back to its raw alert for dismissal.
+        alert_by_key: dict[tuple[str, int, int], dict] = {}
+        for a in raw_alerts:
+            inst = (a.get("most_recent_instance") or {}).get("location") or {}
+            key = (str(inst.get("path") or ""), int(inst.get("start_line") or 1),
+                   int(inst.get("end_line") or inst.get("start_line") or 1))
+            alert_by_key[key] = a
+
+        pairs: list[tuple[Finding, Verdict]] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+            futures = {ex.submit(triage_one, provider, f): f for f in findings}
+            for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+                f = futures[fut]
+                v = fut.result()
+                pairs.append((f, v))
+                print(
+                    f"[triage] {i}/{len(findings)}  {v.verdict:<15}  "
+                    f"conf={v.confidence:.2f}  {f.rule_id}",
+                    file=sys.stderr,
+                )
+
+        if not args.no_reachability:
+            tps = [(f, v) for f, v in pairs if v.verdict in ("true_positive", "needs_review")]
+            if tps:
+                print(f"[reachability] analyzing {len(tps)} finding(s) ...", file=sys.stderr)
+                def _reach_backlog(f: Finding, v: Verdict) -> tuple[Finding, Verdict]:
+                    abs_path = pathlib.Path(f.file_path)
+                    if not abs_path.is_absolute():
+                        abs_path = (target / abs_path).resolve()
+                    r = reachability.analyze(
+                        provider=provider, repo_root=target,
+                        sink_file=abs_path, sink_line=f.line_start,
+                        sink_code=f.code_context,
+                    )
+                    v.reachable = r.reachable
+                    v.exploit_path = r.exploit_path
+                    v.adjusted_severity = r.adjusted_severity
+                    v.reachability_reasoning = r.reasoning
+                    return (f, v)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+                    rfutures = {ex.submit(_reach_backlog, f, v): (f, v) for f, v in tps}
+                    for i, fut in enumerate(concurrent.futures.as_completed(rfutures), 1):
+                        f, v = fut.result()
+                        reach_str = {True: "yes", False: "no", None: "n/a"}[v.reachable]
+                        print(
+                            f"[reachability] {i}/{len(tps)}  reachable={reach_str}  "
+                            f"{f.file_path}:{f.line_start}",
+                            file=sys.stderr,
+                        )
+
+        pairs.sort(key=lambda fv: (fv[0].file_path, fv[0].line_start))
+        write_reports(pairs, args.out)
+
+        if args.dismiss_fps:
+            fps = [(f, v) for f, v in pairs if v.verdict == "false_positive"
+                   and f.codeql_alert_number is not None]
+            if fps:
+                print(f"[dismiss] dismissing {len(fps)} false positive(s) ...", file=sys.stderr)
+            for f, v in fps:
+                try:
+                    _codeql.dismiss_alert(
+                        args.github_repo, github_token,
+                        f.codeql_alert_number,
+                        comment=f"AI triage: {v.reasoning[:200]}",
+                    )
+                    print(f"[dismiss] #{f.codeql_alert_number} {f.rule_id}", file=sys.stderr)
+                except RuntimeError as exc:
+                    print(f"[dismiss] warning: {exc}", file=sys.stderr)
+
+        return 0
 
     scanners = [s.strip().lower() for s in args.scanners.split(",") if s.strip()]
 
@@ -496,7 +634,7 @@ def main() -> int:
         )
         try:
             raw_alerts = _codeql.run_codeql_alerts(
-                repo=args.github_repo, ref=ref, token=github_token,
+                repo=args.github_repo, token=github_token, ref=ref,
             )
         except RuntimeError as exc:
             print(f"[codeql] warning: {exc}", file=sys.stderr)
