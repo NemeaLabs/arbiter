@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -35,6 +36,7 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Any, Optional
 
+import codeql as _codeql
 import reachability
 from prompts import SYSTEM_PROMPT, USER_TEMPLATE
 from providers import LLMProvider, get_provider
@@ -127,6 +129,7 @@ class Finding:
     code_context: str
     language: str
     merged_rule_ids: list[str]  # all rules that fired at (file, line_start, line_end)
+    scanner: str = "semgrep"   # "semgrep" or "codeql"
 
 
 @dataclass
@@ -165,6 +168,44 @@ def finding_from_semgrep(raw: dict[str, Any], repo_root: pathlib.Path) -> Findin
         code_context=code_window(abs_path, start, end),
         language=LANGUAGE_BY_EXT.get(ext, ""),
         merged_rule_ids=[rid],
+    )
+
+
+def finding_from_codeql(alert: dict[str, Any], repo_root: pathlib.Path) -> Finding:
+    instance = alert.get("most_recent_instance") or {}
+    location = instance.get("location") or {}
+    rule = alert.get("rule") or {}
+
+    file_path = str(location.get("path") or "")
+    line_start = int(location.get("start_line") or 1)
+    line_end = int(location.get("end_line") or line_start)
+    rid = str(rule.get("id") or alert.get("number") or "")
+    message = str(
+        (instance.get("message") or {}).get("text")
+        or rule.get("description")
+        or ""
+    )
+
+    raw_sev = str(
+        rule.get("security_severity_level") or rule.get("severity") or "medium"
+    ).upper()
+    if raw_sev in ("NONE", ""):
+        raw_sev = "INFO"
+
+    ext = pathlib.Path(file_path).suffix.lower() if file_path else ""
+    abs_path = (repo_root / file_path).resolve() if file_path else repo_root
+
+    return Finding(
+        rule_id=rid,
+        rule_message=message,
+        severity=raw_sev,
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_end,
+        code_context=code_window(abs_path, line_start, line_end),
+        language=LANGUAGE_BY_EXT.get(ext, ""),
+        merged_rule_ids=[rid],
+        scanner="codeql",
     )
 
 
@@ -278,11 +319,10 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
     lines.append("# AI Triage Report\n")
 
     # Summary framed around the AI's *actions*, not just verdict counts.
-    # A green check with "0 TP, 1 FP" under a small header reads as
-    # "nothing happened" — but the AI actually rejected a Semgrep finding,
-    # and we want that work to be visible to a PR reviewer without
-    # scrolling.
-    summary_bits: list[str] = [f"Reviewed **{total}** Semgrep finding(s)."]
+    _SCANNER_DISPLAY = {"semgrep": "Semgrep", "codeql": "CodeQL"}
+    scanners_used = sorted({f.scanner for f, _ in pairs})
+    scanner_label = " + ".join(_SCANNER_DISPLAY.get(s, s) for s in scanners_used)
+    summary_bits: list[str] = [f"Reviewed **{total}** {scanner_label} finding(s)."]
     if tp:
         summary_bits.append(
             f"**{tp} confirmed** as true positive(s) — action required."
@@ -329,8 +369,9 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
         for f, v in items:
             lines.append(f"### `{f.rule_id}` — {f.file_path}:{f.line_start}\n")
             if verdict == "false_positive":
-                # Frame Semgrep vs AI so the contrast is explicit.
-                lines.append(f"- **Semgrep flagged:** {f.rule_message}")
+                _SCANNER_DISPLAY = {"semgrep": "Semgrep", "codeql": "CodeQL"}
+                scanner_name = _SCANNER_DISPLAY.get(f.scanner, f.scanner)
+                lines.append(f"- **{scanner_name} flagged:** {f.rule_message}")
                 lines.append(
                     f"- **AI verdict:** false positive "
                     f"(confidence {v.confidence:.2f})"
@@ -383,7 +424,7 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Semgrep + LLM triage")
+    ap = argparse.ArgumentParser(description="Semgrep + CodeQL + LLM triage")
     ap.add_argument("target", type=pathlib.Path, help="Path to scan.")
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("report"),
                     help="Output prefix (produces <prefix>.json and <prefix>.md).")
@@ -393,11 +434,11 @@ def main() -> int:
                          "take the deployment/model name from their own "
                          "env vars — see providers.py).")
     ap.add_argument("--max", type=int, default=0,
-                    help="Max findings to triage (0 = all).")
+                    help="Max Semgrep findings to triage (0 = all).")
     ap.add_argument("--concurrency", type=int, default=4,
                     help="Parallel triage calls.")
     ap.add_argument("--baseline", default=None,
-                    help="Git ref to diff against; only triage findings "
+                    help="Git ref to diff against; only triage Semgrep findings "
                          "introduced after this commit. Used in CI.")
     ap.add_argument("--fail-on", default=None,
                     choices=[None, "any-tp", "high-tp"],
@@ -408,7 +449,18 @@ def main() -> int:
                          "reachability, so unreachable sinks don't trip.")
     ap.add_argument("--no-reachability", action="store_true",
                     help="Skip the Phase 3 reachability pass.")
+    ap.add_argument("--scanners", default="semgrep",
+                    help="Comma-separated scanners to run: semgrep, codeql "
+                         "(default: semgrep).")
+    ap.add_argument("--github-repo", default=None,
+                    help="GitHub repo as 'owner/repo'. Required for --scanners codeql.")
+    ap.add_argument("--github-ref", default=None,
+                    help="PR head SHA for CodeQL alert lookup. Required for codeql.")
+    ap.add_argument("--github-token", default=None,
+                    help="GitHub token (defaults to GITHUB_TOKEN env var).")
     args = ap.parse_args()
+
+    scanners = [s.strip().lower() for s in args.scanners.split(",") if s.strip()]
 
     # Build the provider FIRST so configuration errors (missing keys, bad
     # endpoint, unknown provider) surface before we spend time running
@@ -418,10 +470,41 @@ def main() -> int:
           file=sys.stderr)
 
     target = args.target.resolve()
-    findings_raw = run_semgrep(target, baseline=args.baseline)
-    if args.max > 0:
-        findings_raw = findings_raw[: args.max]
-    findings = [finding_from_semgrep(r, target) for r in findings_raw]
+    findings: list[Finding] = []
+
+    if "semgrep" in scanners:
+        findings_raw = run_semgrep(target, baseline=args.baseline)
+        if args.max > 0:
+            findings_raw = findings_raw[: args.max]
+        findings.extend(finding_from_semgrep(r, target) for r in findings_raw)
+
+    if "codeql" in scanners:
+        github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
+        if not github_token:
+            sys.exit(
+                "CodeQL scanner requires a GitHub token. "
+                "Set GITHUB_TOKEN env var or use --github-token."
+            )
+        if not args.github_repo:
+            sys.exit("--github-repo (e.g. owner/repo) is required for --scanners codeql.")
+        ref = args.github_ref or args.baseline or ""
+        if not ref:
+            sys.exit("--github-ref (PR head SHA) is required for --scanners codeql.")
+        print(
+            f"[codeql] fetching alerts for {args.github_repo} at {ref} ...",
+            file=sys.stderr,
+        )
+        try:
+            raw_alerts = _codeql.run_codeql_alerts(
+                repo=args.github_repo, ref=ref, token=github_token,
+            )
+        except RuntimeError as exc:
+            print(f"[codeql] warning: {exc}", file=sys.stderr)
+            raw_alerts = []
+        codeql_findings = [finding_from_codeql(a, target) for a in raw_alerts]
+        print(f"[codeql] {len(codeql_findings)} finding(s)", file=sys.stderr)
+        findings.extend(codeql_findings)
+
     before = len(findings)
     findings = dedupe_findings(findings)
     if before != len(findings):
@@ -438,7 +521,7 @@ def main() -> int:
         args.out.with_suffix(".md").write_text(
             "<!-- ai-triage-report -->\n"
             "# AI Triage Report\n\n"
-            "No Semgrep findings to triage on this PR.\n"
+            "No findings to triage on this PR.\n"
         )
         args.out.with_suffix(".json").write_text("[]")
         return 0
