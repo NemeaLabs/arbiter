@@ -120,18 +120,30 @@ runs:
           pip install semgrep
         fi
 
+    - name: Configure credentials
+      shell: bash
+      run: |
+        # Write inputs to GITHUB_ENV so they persist across all composite
+        # action steps. Composite action step env: blocks can silently drop
+        # secrets passed via inputs; GITHUB_ENV is more reliable.
+        echo "GITHUB_TOKEN=${{ inputs.github-token }}" >> "$GITHUB_ENV"
+        echo "TRIAGE_PROVIDER=${{ inputs.triage-provider }}" >> "$GITHUB_ENV"
+        KEY="${{ inputs.anthropic-api-key }}"
+        [[ -n "$KEY" ]] && echo "ANTHROPIC_API_KEY=$KEY" >> "$GITHUB_ENV" || true
+        MOD="${{ inputs.anthropic-model }}"
+        [[ -n "$MOD" ]] && echo "ANTHROPIC_MODEL=$MOD" >> "$GITHUB_ENV" || true
+        EP="${{ inputs.azure-ai-endpoint }}"
+        [[ -n "$EP" ]] && echo "AZURE_AI_ENDPOINT=$EP" >> "$GITHUB_ENV" || true
+        AK="${{ inputs.azure-ai-api-key }}"
+        [[ -n "$AK" ]] && echo "AZURE_AI_API_KEY=$AK" >> "$GITHUB_ENV" || true
+        AM="${{ inputs.azure-ai-model }}"
+        [[ -n "$AM" ]] && echo "AZURE_AI_MODEL=$AM" >> "$GITHUB_ENV" || true
+        AV="${{ inputs.azure-ai-api-version }}"
+        [[ -n "$AV" ]] && echo "AZURE_AI_API_VERSION=$AV" >> "$GITHUB_ENV" || true
+
     - name: Run arbiter
       id: run
       shell: bash
-      env:
-        GITHUB_TOKEN:         ${{ inputs.github-token }}
-        ANTHROPIC_API_KEY:    ${{ inputs.anthropic-api-key }}
-        ANTHROPIC_MODEL:      ${{ inputs.anthropic-model }}
-        TRIAGE_PROVIDER:      ${{ inputs.triage-provider }}
-        AZURE_AI_ENDPOINT:    ${{ inputs.azure-ai-endpoint }}
-        AZURE_AI_API_KEY:     ${{ inputs.azure-ai-api-key }}
-        AZURE_AI_MODEL:       ${{ inputs.azure-ai-model }}
-        AZURE_AI_API_VERSION: ${{ inputs.azure-ai-api-version }}
       run: |
         set +e
 
