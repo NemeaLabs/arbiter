@@ -501,26 +501,64 @@ def main() -> int:
         except RuntimeError as exc:
             sys.exit(f"[codeql] failed: {exc}")
 
-        # Apply skip-cache: drop alert numbers already triaged in a prior run.
-        skip_set: set[int] = set()
-        if args.skip_alerts:
-            for part in args.skip_alerts.split(","):
-                part = part.strip()
-                if part.isdigit():
-                    skip_set.add(int(part))
-        if skip_set:
-            before_skip = len(raw_alerts)
-            raw_alerts = [a for a in raw_alerts if a.get("number") not in skip_set]
-            skipped = before_skip - len(raw_alerts)
-            print(f"[codeql] skipped {skipped} already-triaged alert(s)", file=sys.stderr)
+        # alert_issue_map: alert_number -> GitHub Issue number, pre-populated
+        # when --post-comments drives skip logic via comment presence.
+        alert_issue_map: dict[int, int] = {}
+
+        if args.post_comments:
+            # When posting comments, the skip signal is whether the issue
+            # already has an AI triage comment — not the label skip-cache.
+            # This ensures alerts triaged in a prior run (without --post-comments)
+            # still get their comment posted.
+            filtered: list[dict] = []
+            for a in raw_alerts:
+                n = int(a.get("number") or 0)
+                if not n:
+                    continue
+                rule_id = (a.get("rule") or {}).get("id", "")
+                inst    = (a.get("most_recent_instance") or {}).get("location") or {}
+                fp      = str(inst.get("path") or "")
+                ls      = int(inst.get("start_line") or 1)
+                try:
+                    inum = _codeql.find_or_create_alert_issue(
+                        repo=args.github_repo, token=github_token,
+                        alert_number=n, rule_id=rule_id,
+                        file_path=fp, line_start=ls,
+                        alert_html_url=a.get("html_url", ""),
+                    )
+                    alert_issue_map[n] = inum
+                    if _codeql.has_triage_comment(args.github_repo, github_token, inum):
+                        print(f"[comments] #{n} already commented, skipping", file=sys.stderr)
+                        continue
+                except RuntimeError as exc:
+                    print(f"[comments] warning #{n}: {exc}", file=sys.stderr)
+                filtered.append(a)
+            raw_alerts = filtered
+        else:
+            # Label-based skip-cache (no --post-comments): avoid re-triaging
+            # alerts already processed in a prior run.
+            skip_set: set[int] = set()
+            if args.skip_alerts:
+                for part in args.skip_alerts.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        skip_set.add(int(part))
+            if skip_set:
+                before_skip = len(raw_alerts)
+                raw_alerts = [a for a in raw_alerts if a.get("number") not in skip_set]
+                print(
+                    f"[codeql] skipped {before_skip - len(raw_alerts)} already-triaged alert(s)",
+                    file=sys.stderr,
+                )
 
         if not raw_alerts:
-            print("[codeql] nothing new to triage.", file=sys.stderr)
-            args.out.with_suffix(".md").write_text(
-                "# AI Backlog Triage\n\n"
-                "No new CodeQL alerts to triage — all open alerts already "
-                "triaged in a previous run.\n"
+            msg = (
+                "All alerts already have triage comments."
+                if args.post_comments else
+                "No new CodeQL alerts to triage — all open alerts already triaged in a previous run."
             )
+            print(f"[codeql] {msg}", file=sys.stderr)
+            args.out.with_suffix(".md").write_text(f"# AI Backlog Triage\n\n{msg}\n")
             args.out.with_suffix(".json").write_text("[]")
             return 0
 
@@ -603,32 +641,26 @@ def main() -> int:
                     print(f"[dismiss] warning: {exc}", file=sys.stderr)
 
         if args.post_comments:
-            print(f"[comments] posting triage verdicts to GitHub Issues ...", file=sys.stderr)
+            print("[comments] posting triage verdicts to GitHub Issues ...", file=sys.stderr)
             for f, v in pairs:
                 if f.codeql_alert_number is None:
                     continue
-                # Find the raw alert to get its html_url.
-                raw = next(
-                    (a for a in raw_alerts if a.get("number") == f.codeql_alert_number),
-                    {}
-                )
-                alert_html_url = raw.get("html_url", "")
+                # issue number was resolved during the pre-flight skip check;
+                # fall back to find_or_create only if map is missing the entry.
                 try:
-                    issue_num = _codeql.find_or_create_alert_issue(
-                        repo=args.github_repo,
-                        token=github_token,
-                        alert_number=f.codeql_alert_number,
-                        rule_id=f.rule_id,
-                        file_path=f.file_path,
-                        line_start=f.line_start,
-                        alert_html_url=alert_html_url,
-                    )
-                    if _codeql.has_triage_comment(args.github_repo, github_token, issue_num):
-                        print(
-                            f"[comments] #{f.codeql_alert_number} already commented, skipping",
-                            file=sys.stderr,
+                    issue_num = alert_issue_map.get(f.codeql_alert_number)
+                    if issue_num is None:
+                        raw_a = next(
+                            (a for a in raw_alerts if a.get("number") == f.codeql_alert_number),
+                            {}
                         )
-                        continue
+                        issue_num = _codeql.find_or_create_alert_issue(
+                            repo=args.github_repo, token=github_token,
+                            alert_number=f.codeql_alert_number,
+                            rule_id=f.rule_id, file_path=f.file_path,
+                            line_start=f.line_start,
+                            alert_html_url=raw_a.get("html_url", ""),
+                        )
                     _codeql.add_triage_comment(
                         repo=args.github_repo,
                         token=github_token,
