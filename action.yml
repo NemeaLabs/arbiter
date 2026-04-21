@@ -123,23 +123,18 @@ runs:
     - name: Configure credentials
       shell: bash
       run: |
-        # Write inputs to GITHUB_ENV so they persist across all composite
-        # action steps. Composite action step env: blocks can silently drop
-        # secrets passed via inputs; GITHUB_ENV is more reliable.
-        echo "GITHUB_TOKEN=${{ inputs.github-token }}" >> "$GITHUB_ENV"
-        echo "TRIAGE_PROVIDER=${{ inputs.triage-provider }}" >> "$GITHUB_ENV"
-        KEY="${{ inputs.anthropic-api-key }}"
-        [[ -n "$KEY" ]] && echo "ANTHROPIC_API_KEY=$KEY" >> "$GITHUB_ENV" || true
-        MOD="${{ inputs.anthropic-model }}"
-        [[ -n "$MOD" ]] && echo "ANTHROPIC_MODEL=$MOD" >> "$GITHUB_ENV" || true
-        EP="${{ inputs.azure-ai-endpoint }}"
-        [[ -n "$EP" ]] && echo "AZURE_AI_ENDPOINT=$EP" >> "$GITHUB_ENV" || true
-        AK="${{ inputs.azure-ai-api-key }}"
-        [[ -n "$AK" ]] && echo "AZURE_AI_API_KEY=$AK" >> "$GITHUB_ENV" || true
-        AM="${{ inputs.azure-ai-model }}"
-        [[ -n "$AM" ]] && echo "AZURE_AI_MODEL=$AM" >> "$GITHUB_ENV" || true
-        AV="${{ inputs.azure-ai-api-version }}"
-        [[ -n "$AV" ]] && echo "AZURE_AI_API_VERSION=$AV" >> "$GITHUB_ENV" || true
+        # Only write a value to GITHUB_ENV when the env var is not already
+        # set by the calling workflow's step-level env: block. This lets
+        # callers pass secrets via `env:` on the `uses:` step (the reliable
+        # path) while inputs serve as a fallback for direct usage.
+        [[ -z "$GITHUB_TOKEN" ]]         && echo "GITHUB_TOKEN=${{ inputs.github-token }}"             >> "$GITHUB_ENV" || true
+        [[ -z "$TRIAGE_PROVIDER" ]]      && echo "TRIAGE_PROVIDER=${{ inputs.triage-provider }}"       >> "$GITHUB_ENV" || true
+        KEY="${{ inputs.anthropic-api-key }}";   [[ -n "$KEY" && -z "$ANTHROPIC_API_KEY" ]]   && echo "ANTHROPIC_API_KEY=$KEY"       >> "$GITHUB_ENV" || true
+        MOD="${{ inputs.anthropic-model }}";     [[ -n "$MOD" && -z "$ANTHROPIC_MODEL" ]]     && echo "ANTHROPIC_MODEL=$MOD"         >> "$GITHUB_ENV" || true
+        EP="${{ inputs.azure-ai-endpoint }}";    [[ -n "$EP"  && -z "$AZURE_AI_ENDPOINT" ]]   && echo "AZURE_AI_ENDPOINT=$EP"        >> "$GITHUB_ENV" || true
+        AK="${{ inputs.azure-ai-api-key }}";     [[ -n "$AK"  && -z "$AZURE_AI_API_KEY" ]]    && echo "AZURE_AI_API_KEY=$AK"         >> "$GITHUB_ENV" || true
+        AM="${{ inputs.azure-ai-model }}";       [[ -n "$AM"  && -z "$AZURE_AI_MODEL" ]]      && echo "AZURE_AI_MODEL=$AM"           >> "$GITHUB_ENV" || true
+        AV="${{ inputs.azure-ai-api-version }}"; [[ -n "$AV"  && -z "$AZURE_AI_API_VERSION" ]] && echo "AZURE_AI_API_VERSION=$AV"   >> "$GITHUB_ENV" || true
 
     - name: Run arbiter
       id: run
