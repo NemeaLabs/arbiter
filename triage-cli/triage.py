@@ -471,10 +471,12 @@ def main() -> int:
                          "GitHub API. Requires security-events:write on GITHUB_TOKEN. "
                          "Only meaningful with --backlog.")
     ap.add_argument("--post-comments", action="store_true",
-                    help="After triage, post the AI verdict as a comment directly on "
-                         "each CodeQL alert. Skips alerts that already have an AI "
-                         "triage comment. Requires security-events:write on "
-                         "GITHUB_TOKEN. Only meaningful with --backlog.")
+                    help="After triage, post one verdict comment per alert on the "
+                         "summary issue (--summary-issue). Skips alerts already "
+                         "commented. Requires issues:write on GITHUB_TOKEN.")
+    ap.add_argument("--summary-issue", type=int, default=None,
+                    help="GitHub Issue number for the triage summary. Required when "
+                         "--post-comments is set.")
     args = ap.parse_args()
 
     # ---- Backlog mode: fetch all open CodeQL alerts, skip Semgrep ----
@@ -500,15 +502,23 @@ def main() -> int:
         except RuntimeError as exc:
             sys.exit(f"[codeql] failed: {exc}")
 
-        if args.post_comments:
-            # Skip signal: whether the alert already has an AI triage comment.
+        # Build url map for use in per-alert comments.
+        alert_html_url_map: dict[int, str] = {
+            int(a["number"]): a.get("html_url", "")
+            for a in raw_alerts if a.get("number")
+        }
+
+        if args.post_comments and args.summary_issue:
+            # Skip alerts already commented on the summary issue.
             filtered: list[dict] = []
             for a in raw_alerts:
                 n = int(a.get("number") or 0)
                 if not n:
                     continue
                 try:
-                    if _codeql.has_alert_triage_comment(args.github_repo, github_token, n):
+                    if _codeql.has_alert_comment_on_issue(
+                        args.github_repo, github_token, args.summary_issue, n,
+                    ):
                         print(f"[comments] #{n} already commented, skipping", file=sys.stderr)
                         continue
                 except RuntimeError as exc:
@@ -613,16 +623,21 @@ def main() -> int:
                 except RuntimeError as exc:
                     print(f"[dismiss] warning: {exc}", file=sys.stderr)
 
-        if args.post_comments:
-            print("[comments] posting triage verdicts to CodeQL alerts ...", file=sys.stderr)
+        if args.post_comments and args.summary_issue:
+            print(
+                f"[comments] posting triage verdicts to issue #{args.summary_issue} ...",
+                file=sys.stderr,
+            )
             for f, v in pairs:
                 if f.codeql_alert_number is None:
                     continue
                 try:
-                    _codeql.add_alert_triage_comment(
+                    _codeql.add_alert_comment_to_issue(
                         repo=args.github_repo,
                         token=github_token,
-                        alert_number=f.codeql_alert_number,
+                        issue_num=args.summary_issue,
+                        alert_num=f.codeql_alert_number,
+                        alert_html_url=alert_html_url_map.get(f.codeql_alert_number, ""),
                         verdict=v.verdict,
                         confidence=v.confidence,
                         severity=v.effective_severity,
@@ -633,11 +648,13 @@ def main() -> int:
                         reachability_reasoning=v.reachability_reasoning,
                     )
                     print(
-                        f"[comments] #{f.codeql_alert_number}  {v.verdict}",
+                        f"[comments] #{f.codeql_alert_number} → issue #{args.summary_issue}  {v.verdict}",
                         file=sys.stderr,
                     )
                 except RuntimeError as exc:
                     print(f"[comments] warning: #{f.codeql_alert_number}: {exc}", file=sys.stderr)
+        elif args.post_comments:
+            print("[comments] --post-comments requires --summary-issue; skipping", file=sys.stderr)
 
         return 0
 

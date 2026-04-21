@@ -94,25 +94,31 @@ def _gh_request(url: str, token: str, method: str = "GET",
         raise RuntimeError(f"GitHub API {method} {url}: HTTP {exc.code}: {body[:300]}") from exc
 
 
-def has_alert_triage_comment(repo: str, token: str, alert_number: int) -> bool:
-    """Return True if the CodeQL alert already has an AI triage comment."""
-    url = (
-        f"{GITHUB_API}/repos/{repo}/code-scanning/alerts/{alert_number}"
-        f"/comments?per_page=100"
-    )
+def _alert_marker(alert_number: int) -> str:
+    return f"<!-- ai-triage-alert-{alert_number} -->"
+
+
+def has_alert_comment_on_issue(
+    repo: str, token: str, issue_num: int, alert_num: int,
+) -> bool:
+    """Return True if the summary issue already has a triage comment for this alert."""
+    url = f"{GITHUB_API}/repos/{repo}/issues/{issue_num}/comments?per_page=100"
     try:
         comments = _gh_request(url, token)
     except RuntimeError:
         return False
     if not isinstance(comments, list):
         return False
-    return any(TRIAGE_COMMENT_MARKER in (c.get("body") or "") for c in comments)
+    marker = _alert_marker(alert_num)
+    return any(marker in (c.get("body") or "") for c in comments)
 
 
-def add_alert_triage_comment(
+def add_alert_comment_to_issue(
     repo: str,
     token: str,
-    alert_number: int,
+    issue_num: int,
+    alert_num: int,
+    alert_html_url: str,
     verdict: str,
     confidence: float,
     severity: str,
@@ -122,13 +128,17 @@ def add_alert_triage_comment(
     exploit_path: list[str],
     reachability_reasoning: Optional[str],
 ) -> None:
-    """Post the AI triage verdict as a comment on the CodeQL alert."""
+    """Post the AI triage verdict as a comment on the summary issue, linked to the alert."""
     emoji = _VERDICT_EMOJI.get(verdict, "🔍")
     verdict_label = verdict.replace("_", " ").title()
+    alert_link = (
+        f"[Alert #{alert_num}]({alert_html_url})" if alert_html_url
+        else f"Alert #{alert_num}"
+    )
 
     lines = [
-        TRIAGE_COMMENT_MARKER,
-        f"## {emoji} AI Triage Verdict: {verdict_label}",
+        _alert_marker(alert_num),
+        f"## {emoji} {alert_link}: {verdict_label}",
         "",
         "| Field | Value |",
         "|---|---|",
@@ -155,7 +165,7 @@ def add_alert_triage_comment(
             lines.append(f"- {reachability_reasoning}")
 
     _gh_request(
-        f"{GITHUB_API}/repos/{repo}/code-scanning/alerts/{alert_number}/comments",
+        f"{GITHUB_API}/repos/{repo}/issues/{issue_num}/comments",
         token, method="POST",
         payload={"body": "\n".join(lines)},
     )
