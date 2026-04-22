@@ -218,7 +218,9 @@ env:
           fail-on: high-tp
 ```
 
-### Weekly backlog triage (all open CodeQL alerts)
+### Weekly backlog triage (single repo, in-repo workflow)
+
+Add this to the repository you want to triage. `GITHUB_TOKEN` has the right permissions automatically.
 
 ```yaml
 on:
@@ -248,6 +250,102 @@ jobs:
           post-comments: 'true'
           dismiss-fps: 'false'
 ```
+
+### Scheduled backlog triage across multiple repos (dedicated runner)
+
+For teams managing multiple repositories, run Arbiter from a **dedicated runner repo** that has a single `TRIAGE_GITHUB_TOKEN` (a PAT or app token with `security-events: read` on every target repo). This keeps triage credentials in one place and lets you triage repos that don't have Arbiter in their own workflows.
+
+**Runner repo layout:**
+```
+.github/workflows/backlog.yml   # workflow below
+repos.txt                       # one owner/repo per line
+```
+
+**`repos.txt`:**
+```
+# one owner/repo per line; lines starting with # are ignored
+acme/api-service
+acme/web-frontend
+acme/data-pipeline
+```
+
+**`.github/workflows/backlog.yml`:**
+```yaml
+name: Backlog Triage
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Monday 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: 'Repos to triage (comma-separated owner/repo). Defaults to repos.txt.'
+        required: false
+      dismiss_fps:
+        description: 'Auto-dismiss AI-confirmed false positives'
+        type: boolean
+        default: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.repos.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build repo matrix
+        id: repos
+        run: |
+          if [ -n "${{ inputs.repos }}" ]; then
+            RAW="${{ inputs.repos }}"
+          else
+            RAW=$(grep -v '^\s*#' repos.txt | grep -v '^\s*$' | tr '\n' ',')
+          fi
+          MATRIX=$(echo "$RAW" | tr ',\n' '\n' | sed 's/[[:space:]]//g' \
+            | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  triage:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        repo: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          token: ${{ secrets.TRIAGE_GITHUB_TOKEN }}
+
+      - name: Run Arbiter backlog
+        uses: NemeaLabs/arbiter@v1
+        env:
+          GITHUB_TOKEN:      ${{ secrets.TRIAGE_GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          mode: backlog
+          github-token: ${{ secrets.TRIAGE_GITHUB_TOKEN }}
+          github-repo: ${{ matrix.repo }}
+          post-comments: 'true'
+          dismiss-fps: ${{ inputs.dismiss_fps || 'false' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.repo }}
+          path: arbiter-report.*
+```
+
+**Required secrets in the runner repo:**
+
+| Secret | Description |
+|--------|-------------|
+| `TRIAGE_GITHUB_TOKEN` | PAT or app token with `security-events: read` (and `security-events: write` if using `dismiss-fps`) on all target repos |
+| `TRIAGE_PROVIDER` | `anthropic`, `azure`, or `azure-openai` |
+| `ANTHROPIC_API_KEY` | When `TRIAGE_PROVIDER=anthropic` |
+
+You can also trigger a one-off run manually from the Actions tab and override the repo list inline — useful for triaging a single repo without editing `repos.txt`.
 
 ### Multiple scanners in one PR check
 
