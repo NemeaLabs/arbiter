@@ -65,15 +65,6 @@ def run_codeql_alerts(
     return alerts
 
 
-TRIAGE_COMMENT_MARKER = "<!-- ai-triage-verdict -->"
-
-_VERDICT_EMOJI = {
-    "true_positive": "🔴",
-    "false_positive": "✅",
-    "needs_review": "🔍",
-}
-
-
 def _gh_request(url: str, token: str, method: str = "GET",
                 payload: Optional[dict] = None) -> dict | list:
     data = json.dumps(payload).encode() if payload else None
@@ -92,83 +83,6 @@ def _gh_request(url: str, token: str, method: str = "GET",
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")
         raise RuntimeError(f"GitHub API {method} {url}: HTTP {exc.code}: {body[:300]}") from exc
-
-
-def _alert_marker(alert_number: int) -> str:
-    return f"<!-- ai-triage-alert-{alert_number} -->"
-
-
-def has_alert_comment_on_issue(
-    repo: str, token: str, issue_num: int, alert_num: int,
-) -> bool:
-    """Return True if the summary issue already has a triage comment for this alert."""
-    url = f"{GITHUB_API}/repos/{repo}/issues/{issue_num}/comments?per_page=100"
-    try:
-        comments = _gh_request(url, token)
-    except RuntimeError:
-        return False
-    if not isinstance(comments, list):
-        return False
-    marker = _alert_marker(alert_num)
-    return any(marker in (c.get("body") or "") for c in comments)
-
-
-def add_alert_comment_to_issue(
-    repo: str,
-    token: str,
-    issue_num: int,
-    alert_num: int,
-    alert_html_url: str,
-    verdict: str,
-    confidence: float,
-    severity: str,
-    reasoning: str,
-    fix_sketch: Optional[str],
-    reachable: Optional[bool],
-    exploit_path: list[str],
-    reachability_reasoning: Optional[str],
-) -> None:
-    """Post the AI triage verdict as a comment on the summary issue, linked to the alert."""
-    emoji = _VERDICT_EMOJI.get(verdict, "🔍")
-    verdict_label = verdict.replace("_", " ").title()
-    alert_link = (
-        f"[Alert #{alert_num}]({alert_html_url})" if alert_html_url
-        else f"Alert #{alert_num}"
-    )
-
-    lines = [
-        _alert_marker(alert_num),
-        f"## {emoji} {alert_link}: {verdict_label}",
-        "",
-        "| Field | Value |",
-        "|---|---|",
-        f"| **Verdict** | {verdict_label} |",
-        f"| **Confidence** | {confidence:.0%} |",
-        f"| **Severity** | {severity} |",
-        "",
-        f"**Reasoning:** {reasoning}",
-    ]
-    if fix_sketch:
-        lines += ["", f"**Fix sketch:** {fix_sketch}"]
-    if reachable is not None or exploit_path or reachability_reasoning:
-        lines.append("")
-        lines.append("**Reachability analysis:**")
-        if reachable is True:
-            lines.append("- Reachable from untrusted input: **yes**")
-        elif reachable is False:
-            lines.append("- Reachable from untrusted input: **no** (dead code or internal-only)")
-        else:
-            lines.append("- Reachable from untrusted input: not applicable / unknown")
-        if exploit_path:
-            lines.append("- Exploit path: " + " → ".join(f"`{p}`" for p in exploit_path))
-        if reachability_reasoning:
-            lines.append(f"- {reachability_reasoning}")
-
-    _gh_request(
-        f"{GITHUB_API}/repos/{repo}/issues/{issue_num}/comments",
-        token, method="POST",
-        payload={"body": "\n".join(lines)},
-    )
 
 
 def dismiss_alert(

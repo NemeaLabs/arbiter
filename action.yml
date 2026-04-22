@@ -77,13 +77,6 @@ inputs:
     description: 'Auto-dismiss AI-confirmed false positive alerts (requires security-events:write)'
     required: false
     default: 'false'
-  post-comments:
-    description: 'Post a verdict comment per alert on the summary-issue (requires summary-issue to be set)'
-    required: false
-    default: 'false'
-  summary-issue:
-    description: 'Summary issue number for per-alert comments (backlog mode)'
-    required: false
 
   # Shared
   out:
@@ -151,9 +144,7 @@ runs:
         if [[ "${{ inputs.mode }}" == "backlog" ]]; then
           ARGS+=("--backlog" "--github-repo" "${{ inputs.github-repo }}")
           [[ -n "${{ inputs.skip-alerts }}" ]]   && ARGS+=("--skip-alerts"   "${{ inputs.skip-alerts }}")
-          [[ -n "${{ inputs.summary-issue }}" ]] && ARGS+=("--summary-issue" "${{ inputs.summary-issue }}")
-          [[ "${{ inputs.dismiss-fps }}"    == "true" ]] && ARGS+=("--dismiss-fps")
-          [[ "${{ inputs.post-comments }}"  == "true" ]] && ARGS+=("--post-comments")
+          [[ "${{ inputs.dismiss-fps }}" == "true" ]] && ARGS+=("--dismiss-fps")
         else
           [[ -n "${{ inputs.scanners }}"   ]] && ARGS+=("--scanners" "${{ inputs.scanners }}" "--github-repo" "${{ inputs.github-repo }}")
           [[ -n "${{ inputs.baseline }}"   ]] && ARGS+=("--baseline"    "${{ inputs.baseline }}")

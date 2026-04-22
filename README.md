@@ -101,10 +101,8 @@ jobs:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `post-comments` | `false` | Post a verdict comment per alert on the summary issue (requires `summary-issue`) |
 | `dismiss-fps` | `false` | Auto-dismiss false-positive Code Scanning alerts (requires `security-events: write`) |
 | `skip-alerts` | — | Comma-separated alert numbers to skip (already triaged) |
-| `summary-issue` | — | Issue number where per-alert verdict comments are posted (required when `post-comments: true`) |
 
 ### LLM provider
 
@@ -258,7 +256,6 @@ jobs:
         with:
           mode: backlog
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          post-comments: 'true'
           dismiss-fps: 'false'
 ```
 
@@ -348,7 +345,6 @@ jobs:
           mode: backlog
           github-token: ${{ secrets.TRIAGE_GITHUB_TOKEN }}
           github-repo: ${{ matrix.repo }}
-          post-comments: 'true'
           dismiss-fps: ${{ inputs.dismiss_fps || 'false' }}
 
       - uses: actions/upload-artifact@v4
@@ -465,7 +461,6 @@ python triage.py /path/to/repo \
 | `--concurrency K` | 4 | Parallel LLM calls |
 | `--no-reachability` | off | Skip cross-file reachability pass |
 | `--dismiss-fps` | off | Dismiss FP CodeQL alerts via API (backlog mode) |
-| `--post-comments` | off | Post per-alert verdict comments (backlog mode) |
 
 ### Running tests
 
