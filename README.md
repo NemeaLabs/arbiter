@@ -55,9 +55,14 @@ jobs:
       - name: Run Arbiter
         uses: NemeaLabs/arbiter@v1
         env:
-          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
-          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN:         ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:      ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL:      ${{ secrets.ANTHROPIC_MODEL }}
+          AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
+          AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+          AZURE_AI_API_VERSION: ${{ secrets.AZURE_AI_API_VERSION }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           sarif-file: semgrep.sarif
@@ -242,9 +247,14 @@ jobs:
       - name: Run Arbiter
         uses: NemeaLabs/arbiter@v1
         env:
-          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
-          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN:         ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:      ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL:      ${{ secrets.ANTHROPIC_MODEL }}
+          AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
+          AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+          AZURE_AI_API_VERSION: ${{ secrets.AZURE_AI_API_VERSION }}
         with:
           mode: backlog
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -322,9 +332,14 @@ jobs:
       - name: Run Arbiter backlog
         uses: NemeaLabs/arbiter@v1
         env:
-          GITHUB_TOKEN:      ${{ secrets.TRIAGE_GITHUB_TOKEN }}
-          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN:         ${{ secrets.TRIAGE_GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:      ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL:      ${{ secrets.ANTHROPIC_MODEL }}
+          AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
+          AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
+          AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+          AZURE_AI_API_VERSION: ${{ secrets.AZURE_AI_API_VERSION }}
         with:
           mode: backlog
           github-token: ${{ secrets.TRIAGE_GITHUB_TOKEN }}
