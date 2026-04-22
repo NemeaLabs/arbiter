@@ -28,7 +28,7 @@ inputs:
     description: 'Anthropic API key'
     required: false
   triage-provider:
-    description: 'LLM provider: anthropic (default), azure (Azure AI Foundry), or azure-openai (Azure OpenAI Service)'
+    description: 'LLM provider: anthropic (default), azure (Azure AI Foundry), azure-openai (Azure OpenAI Service), or openai (any OpenAI-compatible endpoint e.g. GitHub Models)'
     required: false
     default: 'anthropic'
   anthropic-model:

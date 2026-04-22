@@ -33,6 +33,12 @@ Supported backends
                  newer `/openai/v1` OpenAI-SDK-compatible endpoint.
                  Works with both URL shapes; the SDK fills in paths.
 
+- openai       : Any OpenAI-compatible endpoint via the standard
+                 `OpenAI` client (Bearer token auth). Use this for
+                 GitHub Models (models.inference.ai.azure.com),
+                 Ollama, Together AI, or any endpoint that speaks
+                 the OpenAI chat completions API.
+
 Not sure which Azure mode you need? If hitting
 `<endpoint>/models/chat/completions` returns 404 with a valid API key,
 use `azure-openai`. If it returns a completion, use `azure`.
@@ -58,6 +64,13 @@ Configuration (env vars)
   AZURE_AI_API_KEY      = <resource api key>
   AZURE_AI_MODEL        = <deployment-name>  (not the base model name)
   AZURE_AI_API_VERSION  = 2024-10-21  (optional; default supplied)
+
+  # OpenAI-compatible  (TRIAGE_PROVIDER=openai)
+  AZURE_AI_ENDPOINT     = https://models.inference.ai.azure.com  (GitHub Models)
+                          http://localhost:11434/v1               (Ollama)
+                          https://api.together.xyz/v1             (Together AI)
+  AZURE_AI_API_KEY      = <bearer token / api key>
+  AZURE_AI_MODEL        = gpt-4o | meta-llama/... | ...
 """
 
 from __future__ import annotations
@@ -245,6 +258,43 @@ class AzureOpenAIProvider:
 
 
 # ---------------------------------------------------------------------------
+# OpenAI-compatible (GitHub Models, Ollama, Together, etc.)
+# ---------------------------------------------------------------------------
+
+class OpenAICompatibleProvider:
+    """Any endpoint that speaks the OpenAI chat completions API.
+
+    Uses Bearer token auth (standard OpenAI style), not the api-key header
+    that AzureOpenAI sends. Works with GitHub Models, Ollama, Together AI,
+    and any other OpenAI-compatible server.
+    """
+
+    name = "openai"
+
+    def __init__(self, base_url: str, api_key: str, model: str):
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise RuntimeError(
+                "TRIAGE_PROVIDER=openai but `openai` is not installed. "
+                "Run: pip install openai"
+            ) from exc
+        self.model = model
+        self._client = OpenAI(base_url=base_url, api_key=api_key)
+
+    def chat(self, system: str, user: str, max_tokens: int = 2000) -> str:
+        resp = self._client.chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        return resp.choices[0].message.content
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -294,7 +344,13 @@ def get_provider(anthropic_model_cli: Optional[str] = None) -> LLMProvider:
             model=model, api_version=api_version,
         )
 
+    if choice == "openai":
+        endpoint = _require_env("AZURE_AI_ENDPOINT")
+        api_key = _require_env("AZURE_AI_API_KEY")
+        model = _require_env("AZURE_AI_MODEL")
+        return OpenAICompatibleProvider(base_url=endpoint, api_key=api_key, model=model)
+
     raise SystemExit(
         f"Unknown TRIAGE_PROVIDER={choice!r}. "
-        f"Expected one of: anthropic, azure, azure-openai."
+        f"Expected one of: anthropic, azure, azure-openai, openai."
     )
