@@ -78,7 +78,7 @@ inputs:
     required: false
     default: 'false'
   post-comments:
-    description: 'Post a verdict comment directly on each GitHub Code Scanning alert (falls back to summary-issue if GHAS is not available)'
+    description: 'Post a verdict comment per alert on the summary-issue (requires summary-issue to be set)'
     required: false
     default: 'false'
   summary-issue:

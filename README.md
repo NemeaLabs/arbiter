@@ -101,10 +101,10 @@ jobs:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `post-comments` | `false` | Post per-alert triage comments on GitHub Code Scanning alerts |
-| `dismiss-fps` | `false` | Auto-dismiss false-positive CodeQL alerts (requires `security-events: write`) |
+| `post-comments` | `false` | Post a verdict comment per alert on the summary issue (requires `summary-issue`) |
+| `dismiss-fps` | `false` | Auto-dismiss false-positive Code Scanning alerts (requires `security-events: write`) |
 | `skip-alerts` | — | Comma-separated alert numbers to skip (already triaged) |
-| `summary-issue` | — | Issue number for fallback per-alert comments |
+| `summary-issue` | — | Issue number where per-alert verdict comments are posted (required when `post-comments: true`) |
 
 ### LLM provider
 

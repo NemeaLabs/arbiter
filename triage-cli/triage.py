@@ -463,14 +463,14 @@ def main() -> int:
         }
 
         if args.post_comments:
-            # Skip alerts that already have a triage comment (alert-direct or issue fallback).
+            # Skip alerts that already have a triage comment on the summary issue.
             filtered: list[dict] = []
             for a in raw_alerts:
                 n = int(a.get("number") or 0)
                 if not n:
                     continue
-                already = _codeql.has_alert_triage_comment(args.github_repo, github_token, n)
-                if not already and args.summary_issue:
+                already = False
+                if args.summary_issue:
                     try:
                         already = _codeql.has_alert_comment_on_issue(
                             args.github_repo, github_token, args.summary_issue, n,
@@ -581,48 +581,41 @@ def main() -> int:
                     print(f"[dismiss] warning: {exc}", file=sys.stderr)
 
         if args.post_comments:
-            print("[comments] posting triage verdicts ...", file=sys.stderr)
-            for f, v in pairs:
-                if f.codeql_alert_number is None:
-                    continue
-                n = f.codeql_alert_number
-                comment_kwargs = dict(
-                    verdict=v.verdict,
-                    confidence=v.confidence,
-                    severity=v.effective_severity,
-                    reasoning=v.reasoning,
-                    fix_sketch=v.suggested_fix_sketch,
-                    reachable=v.reachable,
-                    exploit_path=v.exploit_path or [],
-                    reachability_reasoning=v.reachability_reasoning,
+            if not args.summary_issue:
+                print(
+                    "[comments] --post-comments requires --summary-issue <issue-number>. "
+                    "Create a GitHub issue to collect triage verdicts and pass its number.",
+                    file=sys.stderr,
                 )
-                try:
-                    _codeql.add_alert_triage_comment(
-                        repo=args.github_repo, token=github_token,
-                        alert_number=n, **comment_kwargs,
-                    )
-                    print(f"[comments] #{n} → alert comment  {v.verdict}", file=sys.stderr)
-                except RuntimeError as exc:
-                    print(f"[comments] #{n}: alert comment failed: {exc}", file=sys.stderr)
-                    if args.summary_issue:
-                        try:
-                            _codeql.add_alert_comment_to_issue(
-                                repo=args.github_repo, token=github_token,
-                                issue_num=args.summary_issue, alert_num=n,
-                                alert_html_url=alert_html_url_map.get(n, ""),
-                                **comment_kwargs,
-                            )
-                            print(
-                                f"[comments] #{n} → issue #{args.summary_issue}  {v.verdict}",
-                                file=sys.stderr,
-                            )
-                        except RuntimeError as exc2:
-                            print(f"[comments] warning: #{n}: {exc2}", file=sys.stderr)
-                    else:
+            else:
+                print(
+                    f"[comments] posting triage verdicts to issue #{args.summary_issue} ...",
+                    file=sys.stderr,
+                )
+                for f, v in pairs:
+                    if f.codeql_alert_number is None:
+                        continue
+                    n = f.codeql_alert_number
+                    try:
+                        _codeql.add_alert_comment_to_issue(
+                            repo=args.github_repo, token=github_token,
+                            issue_num=args.summary_issue, alert_num=n,
+                            alert_html_url=alert_html_url_map.get(n, ""),
+                            verdict=v.verdict,
+                            confidence=v.confidence,
+                            severity=v.effective_severity,
+                            reasoning=v.reasoning,
+                            fix_sketch=v.suggested_fix_sketch,
+                            reachable=v.reachable,
+                            exploit_path=v.exploit_path or [],
+                            reachability_reasoning=v.reachability_reasoning,
+                        )
                         print(
-                            f"[comments] #{n}: pass --summary-issue for fallback",
+                            f"[comments] #{n} → issue #{args.summary_issue}  {v.verdict}",
                             file=sys.stderr,
                         )
+                    except RuntimeError as exc:
+                        print(f"[comments] warning: #{n}: {exc}", file=sys.stderr)
 
         return 0
 
