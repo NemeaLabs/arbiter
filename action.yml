@@ -52,9 +52,9 @@ inputs:
     description: 'Base commit SHA to diff against (PR mode)'
     required: false
   scanners:
-    description: 'Comma-separated scanners to run: semgrep, github-code-scanning (alias: codeql). Use sarif-file for any other tool.'
+    description: 'Comma-separated scanners to run: semgrep, github-code-scanning (alias: codeql). Omit when passing sarif-file/sarif-dir.'
     required: false
-    default: 'semgrep'
+    default: ''
   sarif-file:
     description: 'Path to a SARIF output file to triage (any SAST tool: Trivy, Bandit, Snyk, Checkov, gosec, ESLint, etc.)'
     required: false
@@ -122,7 +122,7 @@ runs:
       shell: bash
       run: |
         pip install -r "${{ github.action_path }}/triage-cli/requirements.txt"
-        if [[ "${{ inputs.mode }}" == "pr" ]] || [[ "${{ inputs.scanners }}" == *"semgrep"* ]]; then
+        if [[ "${{ inputs.scanners }}" == *"semgrep"* ]]; then
           pip install semgrep
         fi
 
@@ -157,7 +157,7 @@ runs:
           [[ "${{ inputs.dismiss-fps }}"    == "true" ]] && ARGS+=("--dismiss-fps")
           [[ "${{ inputs.post-comments }}"  == "true" ]] && ARGS+=("--post-comments")
         else
-          ARGS+=("--scanners" "${{ inputs.scanners }}" "--github-repo" "${{ inputs.github-repo }}")
+          [[ -n "${{ inputs.scanners }}"   ]] && ARGS+=("--scanners" "${{ inputs.scanners }}" "--github-repo" "${{ inputs.github-repo }}")
           [[ -n "${{ inputs.baseline }}"   ]] && ARGS+=("--baseline"    "${{ inputs.baseline }}")
           [[ -n "${{ inputs.github-ref }}" ]] && ARGS+=("--github-ref"  "${{ inputs.github-ref }}")
           [[ -n "${{ inputs.fail-on }}"    ]] && ARGS+=("--fail-on"     "${{ inputs.fail-on }}")

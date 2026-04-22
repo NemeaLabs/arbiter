@@ -460,10 +460,10 @@ def main() -> int:
                          "reachability, so unreachable sinks don't trip.")
     ap.add_argument("--no-reachability", action="store_true",
                     help="Skip the Phase 3 reachability pass.")
-    ap.add_argument("--scanners", default="semgrep",
+    ap.add_argument("--scanners", default="",
                     help="Comma-separated scanners to run: semgrep, "
-                         "github-code-scanning (alias: codeql) "
-                         "(default: semgrep). Use --sarif for any other tool.")
+                         "github-code-scanning (alias: codeql). "
+                         "Use --sarif / --sarif-dir for any other tool.")
     ap.add_argument("--sarif", default=None, metavar="FILE",
                     help="Path to a SARIF output file to triage (any SAST tool).")
     ap.add_argument("--sarif-dir", default=None, metavar="DIR",
@@ -687,6 +687,13 @@ def main() -> int:
         return 0
 
     scanners = [s.strip().lower() for s in args.scanners.split(",") if s.strip()]
+
+    if not scanners and not args.sarif and not args.sarif_dir:
+        sys.exit(
+            "error: no input source specified. "
+            "Provide --sarif <file>, --sarif-dir <dir>, or --scanners <list>.\n"
+            "       Run your scanner first and pass the SARIF output with --sarif."
+        )
 
     # Build the provider FIRST so configuration errors (missing keys, bad
     # endpoint, unknown provider) surface before we spend time running
