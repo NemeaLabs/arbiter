@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Local Semgrep + LLM triage CLI (Phase 1 of the demo plan).
+SAST triage CLI — parse scanner SARIF output, triage each finding with an
+LLM, and write a machine-readable report.json and human-readable report.md.
 
 Flow:
-  1. Run `semgrep --config auto --json` on the target path.
+  1. Accept SARIF from any scanner via --sarif / --sarif-dir, or fetch
+     GitHub Code Scanning alerts via --scanners github-code-scanning.
   2. For each finding, extract the code window around the sink.
   3. Ask the configured LLM provider for a structured JSON verdict.
-  4. Write a machine-readable report.json and a human-readable report.md.
+  4. Write report.json and report.md.
 
 Providers (selected via env var `TRIAGE_PROVIDER`):
   anthropic  — Anthropic API (default). Needs ANTHROPIC_API_KEY.
@@ -15,12 +17,11 @@ Providers (selected via env var `TRIAGE_PROVIDER`):
   See providers.py for the full env-var contract.
 
 Usage:
-  python triage.py <target-path> [--out REPORT_PREFIX] [--model MODEL]
-                                 [--max N] [--concurrency K]
+  python triage.py <target-path> --sarif <file> [--out PREFIX]
+                                 [--baseline REF] [--fail-on high-tp]
 
 Requirements:
   pip install -r requirements.txt
-  pip install semgrep
 """
 
 from __future__ import annotations
@@ -227,7 +228,7 @@ def _get_changed_files(baseline: str) -> set[str]:
 def dedupe_findings(findings: list[Finding]) -> list[Finding]:
     """Collapse findings at the same (file, line_start, line_end) into one.
 
-    Semgrep's rulesets overlap — e.g. a single SQL injection line can trip
+    SAST rulesets overlap — e.g. a single SQL injection line can trip
     both `python.django.*` and `python.flask.*` rules. Paying for two triage
     calls on identical code is waste. We keep the highest-severity primary
     rule and stash the others in `merged_rule_ids` so the model still sees
@@ -340,8 +341,8 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
         )
     if fp:
         summary_bits.append(
-            f"**{fp} rejected** as false positive(s) — Semgrep flagged these, "
-            f"but AI triage determined they are not exploitable. "
+            f"**{fp} rejected** as false positive(s) — "
+            f"AI triage determined these are not exploitable. "
             f"Details below for auditability."
         )
     if nr:
@@ -356,7 +357,7 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
     fp_items = groups.get("false_positive", [])
     if fp_items:
         lines.append(
-            "> **AI rejected the following Semgrep finding(s):** " +
+            "> **AI rejected the following finding(s):** " +
             ", ".join(
                 f"`{f.rule_id}` at `{f.file_path}:{f.line_start}`"
                 for f, _ in fp_items
@@ -435,7 +436,7 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Semgrep + CodeQL + LLM triage")
+    ap = argparse.ArgumentParser(description="SAST + LLM triage")
     ap.add_argument("target", type=pathlib.Path, help="Path to scan.")
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("report"),
                     help="Output prefix (produces <prefix>.json and <prefix>.md).")
@@ -445,12 +446,12 @@ def main() -> int:
                          "take the deployment/model name from their own "
                          "env vars — see providers.py).")
     ap.add_argument("--max", type=int, default=0,
-                    help="Max Semgrep findings to triage (0 = all).")
+                    help="Max findings to triage (0 = all).")
     ap.add_argument("--concurrency", type=int, default=4,
                     help="Parallel triage calls.")
     ap.add_argument("--baseline", default=None,
-                    help="Git ref to diff against; only triage Semgrep findings "
-                         "introduced after this commit. Used in CI.")
+                    help="Git ref to diff against; filters SARIF findings to "
+                         "files changed since this commit. Used in CI.")
     ap.add_argument("--fail-on", default=None,
                     choices=[None, "any-tp", "high-tp"],
                     help="Exit nonzero if any finding matches: 'any-tp' = "
@@ -475,7 +476,7 @@ def main() -> int:
     ap.add_argument("--github-token", default=None,
                     help="GitHub token (defaults to GITHUB_TOKEN env var).")
     ap.add_argument("--backlog", action="store_true",
-                    help="Backlog mode: skip Semgrep, fetch ALL open CodeQL alerts "
+                    help="Backlog mode: fetch ALL open GitHub Code Scanning alerts "
                          "for the repo (no --github-ref needed). Disables --fail-on.")
     ap.add_argument("--skip-alerts", default="",
                     help="Comma-separated CodeQL alert numbers to skip (already "
@@ -696,8 +697,7 @@ def main() -> int:
         )
 
     # Build the provider FIRST so configuration errors (missing keys, bad
-    # endpoint, unknown provider) surface before we spend time running
-    # Semgrep across the repo.
+    # endpoint, unknown provider) surface before parsing any SARIF input.
     provider = get_provider(anthropic_model_cli=args.model)
     print(f"[triage] provider={provider.name} model={provider.model}",
           file=sys.stderr)
@@ -856,7 +856,7 @@ def main() -> int:
                         file=sys.stderr,
                     )
 
-    # Preserve original semgrep order in the report.
+    # Preserve stable order in the report (file path + line).
     pairs.sort(key=lambda fv: (fv[0].file_path, fv[0].line_start))
     write_reports(pairs, args.out)
 
