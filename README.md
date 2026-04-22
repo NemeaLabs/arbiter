@@ -1,63 +1,302 @@
-# AI Vulnerability Triage Demo
+# Arbiter
 
-A working reproduction of the core idea from Synthesia's "Scaling Vulnerability
-Management with AI" — layer an LLM on top of free-tier Semgrep to cut SAST
-noise, produce reasoned verdicts, and (eventually) open fix PRs.
+AI-powered SAST triage as a GitHub Actions composite action. Run any SAST scanner, pass its SARIF output to Arbiter, and get AI verdicts (true positive / false positive / needs review) posted as a PR comment — with an optional build gate that blocks merges on high-confidence vulnerabilities.
+
+## How it works
 
 ```
-.
-├── DEMO-PLAN.md          # Phased roadmap (read this first)
-├── triage-cli/           # Phase 1 — local CLI: Semgrep → Claude → report
-├── seed-repos/
-│   ├── vuln-flask-app/   # Python/Flask with seeded, documented vulns
-│   └── vuln-node-app/    # Node/Express with seeded, documented vulns
-└── .github/workflows/    # Phase 2 — GitHub Actions wrapper (coming)
+Your scanner (Semgrep / Trivy / Bandit / etc.)
+        │
+        ▼  SARIF file
+   NemeaLabs/arbiter@v1
+        │
+        ├─ Phase 1: Parse findings from SARIF
+        ├─ Phase 2: AI triage — verdict + confidence + reasoning per finding
+        ├─ Phase 3: Reachability analysis — is the sink actually reachable?
+        └─ Output: report.md (PR comment) + report.json (machine-readable)
 ```
 
-## Quickstart
+Arbiter does not run any scanner itself. You run the scanner in a prior step and hand off the SARIF file.
 
-```bash
-# 1. Install the CLI + Semgrep free tier
-cd triage-cli
-pip install -r requirements.txt
-pip install semgrep
+---
 
-# 2. Provide your Claude API key
-export ANTHROPIC_API_KEY=sk-ant-...
+## Quick start — PR triage
 
-# 3. Triage one of the seed repos
-python triage.py ../seed-repos/vuln-flask-app --out ../flask-report
+```yaml
+# .github/workflows/triage.yml
+name: Security Triage
 
-# 4. Read the summary
-cat ../flask-report.md
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # Step 1: run your scanner and produce a SARIF file
+      - name: Run Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config auto --sarif \
+            --baseline-commit ${{ github.event.pull_request.base.sha }} \
+            --output semgrep.sarif . || true
+
+      # Step 2: triage with Arbiter
+      - name: Run Arbiter
+        uses: NemeaLabs/arbiter@v1
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          mode: pr
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sarif-file: semgrep.sarif
+          baseline: ${{ github.event.pull_request.base.sha }}
+          fail-on: high-tp
 ```
 
-## What the seed repos are for
+---
 
-Each seed repo has a `README.md` listing every intentional vulnerability with
-a label: `TP` (true positive, the AI should confirm), `TP-subtle` (testing
-reasoning depth), or `FP-trap` (looks dangerous but isn't — the AI should
-reject it).
+## Inputs
 
-That gives you ground truth to measure the triage's quality against, not just
-vibes.
+### Required
 
-## Model and cost
+| Input | Description |
+|-------|-------------|
+| `github-token` | GitHub token — needs `pull-requests: write` for PR comments |
 
-- Default model: `claude-sonnet-4-6` (good code reasoning, fast, cheap).
-- Typical seed-repo run: ~15–30 findings, under a minute, cents per run.
-- Swap with `--model claude-opus-4-6` for tougher reasoning cases.
+### Scanner input (one required in PR mode)
 
-## Status
+| Input | Description |
+|-------|-------------|
+| `sarif-file` | Path to a single SARIF file from any scanner |
+| `sarif-dir` | Directory of `*.sarif` files (all are merged) |
+| `scanners` | `github-code-scanning` to pull alerts from GitHub Code Scanning API (CodeQL). Can combine with SARIF inputs. |
 
-- [x] Phase 0 — seed repos
-- [x] Phase 1 — local triage CLI
-- [x] Phase 2 — GitHub Actions wrapper
-- [x] Phase 3 — reachability/exploitability analysis
-- [ ] Phase 4 — auto-fix PRs
-- [ ] Phase 5 — SCA triage
-- [ ] Phase 6 — ticketing + metrics
+### PR mode options
 
-See `DEMO-PLAN.md` for the full breakdown.
+| Input | Default | Description |
+|-------|---------|-------------|
+| `mode` | `pr` | Run mode: `pr` or `backlog` |
+| `baseline` | — | Base commit SHA to diff against; filters SARIF findings to changed files only |
+| `fail-on` | — | `high-tp` — fail the step when a high/critical true positive with confidence ≥ 0.8 is found. `any-tp` — fail on any true positive |
+| `github-ref` | — | PR head ref (e.g. `refs/pull/N/head`). Required for `scanners: github-code-scanning` |
 
-# re-trigger B after workflow push 1776725503
+### Backlog mode options
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `post-comments` | `false` | Post per-alert triage comments directly on GitHub Code Scanning alerts |
+| `dismiss-fps` | `false` | Auto-dismiss false-positive CodeQL alerts (requires `security-events: write`) |
+| `skip-alerts` | — | Comma-separated alert numbers to skip (already triaged) |
+| `summary-issue` | — | Issue number for fallback per-alert comments |
+
+### LLM provider
+
+Pass credentials via `env:` on the `uses:` step (see examples below).
+
+| Env var | Description |
+|---------|-------------|
+| `TRIAGE_PROVIDER` | `anthropic` (default), `azure`, or `azure-openai` |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `ANTHROPIC_MODEL` | Model override (default: `claude-sonnet-4-6`) |
+| `AZURE_AI_ENDPOINT` | Azure AI Foundry or Azure OpenAI endpoint URL |
+| `AZURE_AI_API_KEY` | Azure API key |
+| `AZURE_AI_MODEL` | Azure deployment name |
+| `AZURE_AI_API_VERSION` | Azure API version (optional) |
+
+### Shared options
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `target` | `.` | Path to the repository root |
+| `out` | `arbiter-report` | Output file prefix — produces `<prefix>.md` and `<prefix>.json` |
+| `concurrency` | `4` | Parallel LLM triage calls |
+| `no-reachability` | `false` | Skip the reachability analysis pass |
+
+---
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `report-md` | Path to the generated Markdown report |
+| `report-json` | Path to the generated JSON report |
+| `exit-code` | `0` = pass, `1` = fail-on gate triggered |
+
+---
+
+## Provider setup
+
+### Anthropic
+
+```yaml
+env:
+  TRIAGE_PROVIDER:   anthropic   # or omit — it's the default
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  ANTHROPIC_MODEL:   claude-sonnet-4-6   # optional
+```
+
+### Azure AI Foundry
+
+Use when your endpoint is `https://<project>.services.ai.azure.com/models`.
+
+```yaml
+env:
+  TRIAGE_PROVIDER:      azure
+  AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
+  AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
+  AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+```
+
+### Azure OpenAI
+
+Use when your endpoint ends in `.openai.azure.com`.
+
+```yaml
+env:
+  TRIAGE_PROVIDER:      azure-openai
+  AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
+  AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
+  AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+```
+
+---
+
+## Examples
+
+### Trivy (filesystem scan)
+
+```yaml
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          format: sarif
+          output: trivy.sarif
+          exit-code: '0'
+
+      - name: Run Arbiter
+        uses: NemeaLabs/arbiter@v1
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          mode: pr
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sarif-file: trivy.sarif
+          baseline: ${{ github.event.pull_request.base.sha }}
+          fail-on: high-tp
+```
+
+### GitHub Code Scanning / CodeQL
+
+```yaml
+      - name: Run Arbiter
+        uses: NemeaLabs/arbiter@v1
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          mode: pr
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          scanners: github-code-scanning
+          github-ref: refs/pull/${{ github.event.pull_request.number }}/head
+          fail-on: high-tp
+```
+
+### Weekly backlog triage (all open CodeQL alerts)
+
+```yaml
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Monday 09:00 UTC
+
+jobs:
+  backlog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Arbiter
+        uses: NemeaLabs/arbiter@v1
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          mode: backlog
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          post-comments: 'true'
+          dismiss-fps: 'false'
+```
+
+### Multiple scanners in one PR check
+
+```yaml
+      - name: Run Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config auto --sarif \
+            --baseline-commit ${{ github.event.pull_request.base.sha }} \
+            --output semgrep.sarif . || true
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          scan-type: fs
+          format: sarif
+          output: trivy.sarif
+          exit-code: '0'
+
+      - name: Run Arbiter (both SARIF files)
+        uses: NemeaLabs/arbiter@v1
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          mode: pr
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sarif-dir: .        # picks up *.sarif in the workspace root
+          baseline: ${{ github.event.pull_request.base.sha }}
+          fail-on: high-tp
+```
+
+---
+
+## Required secrets
+
+Set these under **Settings → Secrets and variables → Actions** in your repo:
+
+| Secret | When required |
+|--------|---------------|
+| `TRIAGE_PROVIDER` | Always (set to `anthropic`, `azure`, or `azure-openai`) |
+| `ANTHROPIC_API_KEY` | When `TRIAGE_PROVIDER=anthropic` |
+| `AZURE_AI_ENDPOINT` | When using Azure |
+| `AZURE_AI_API_KEY` | When using Azure |
+| `AZURE_AI_MODEL` | When using Azure |
+
+`GITHUB_TOKEN` is provided automatically by GitHub Actions — no secret needed.
+
+---
+
+## License
+
+MIT

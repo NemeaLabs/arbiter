@@ -1,163 +1,100 @@
 # triage-cli
 
-Phase 1 of the demo: a local CLI that runs free-tier Semgrep against a target
-repo and asks an LLM for a structured verdict on every finding.
+The Python CLI that powers the Arbiter GitHub Action. You can also run it directly for local triage without GitHub Actions.
 
 ## Install
 
 ```bash
 pip install -r requirements.txt
+```
+
+To use Semgrep as your scanner:
+```bash
 pip install semgrep
+```
+
+## Local usage
+
+Run your scanner first, then pass the SARIF output to the CLI:
+
+```bash
+# 1. Run your scanner
+semgrep scan --config auto --sarif --output semgrep.sarif /path/to/repo
+
+# 2. Triage
+python triage.py /path/to/repo --sarif semgrep.sarif --out report
+
+# 3. Read results
+cat report.md
+```
+
+Or triage GitHub Code Scanning alerts directly (no local scanner needed):
+
+```bash
+export GITHUB_TOKEN=ghp_...
+python triage.py /path/to/repo \
+  --scanners github-code-scanning \
+  --github-repo owner/repo \
+  --out report
 ```
 
 ## Providers
 
-The CLI is LLM-agnostic. Pick a provider by setting `TRIAGE_PROVIDER`.
+Set `TRIAGE_PROVIDER` to select the LLM backend. All other env vars are read automatically.
 
 ### Anthropic (default)
 
 ```bash
-export TRIAGE_PROVIDER=anthropic     # or omit - it's the default
+export TRIAGE_PROVIDER=anthropic      # or omit
 export ANTHROPIC_API_KEY=sk-ant-...
-# optional: override the model
-export ANTHROPIC_MODEL=claude-sonnet-4-6
+export ANTHROPIC_MODEL=claude-sonnet-4-6   # optional
 ```
 
-You can also override the Anthropic model per-run with `--model`:
-
-```bash
-python triage.py ../vuln-flask-app --model claude-opus-4-6
-```
-
-### Azure AI Foundry (via `azure-ai-inference`)
-
-Use this when your Foundry project exposes the unified `/models` inference
-endpoint. Works for both Azure OpenAI deployments (gpt-4o, gpt-5) and
-catalog models (Llama-3.3, Mistral Large, Phi-4) through the same API.
+### Azure AI Foundry
 
 ```bash
 export TRIAGE_PROVIDER=azure
-export AZURE_AI_ENDPOINT="https://<your-project>.services.ai.azure.com/models"
-export AZURE_AI_API_KEY="<your-foundry-project-key>"
-export AZURE_AI_MODEL="<deployment-name>"   # e.g. gpt-4o, Llama-3.3-70B-Instruct
-# optional:
-export AZURE_AI_API_VERSION="2024-10-21"
+export AZURE_AI_ENDPOINT="https://<project>.services.ai.azure.com/models"
+export AZURE_AI_API_KEY="<key>"
+export AZURE_AI_MODEL="<deployment-name>"
 ```
 
-### Azure OpenAI (via `openai` SDK)
-
-Use this when your Azure resource is a plain Azure OpenAI resource
-(hostname ends in `.openai.azure.com`) and doesn't expose the Foundry
-`/models` surface. Accepts either the classic resource URL or the newer
-`/openai/v1` preview endpoint - the extra path is stripped automatically.
+### Azure OpenAI
 
 ```bash
 export TRIAGE_PROVIDER=azure-openai
-export AZURE_AI_ENDPOINT="https://<resource>.openai.azure.com/openai/v1"
-# ^ or just https://<resource>.openai.azure.com/ - both work
-export AZURE_AI_API_KEY="<resource-api-key>"
-export AZURE_AI_MODEL="<deployment-name>"   # NOT the base model name
-# optional:
-export AZURE_AI_API_VERSION="2024-10-21"
+export AZURE_AI_ENDPOINT="https://<resource>.openai.azure.com"
+export AZURE_AI_API_KEY="<key>"
+export AZURE_AI_MODEL="<deployment-name>"
 ```
 
-**Which Azure mode do I need?** Try the Foundry `/models` endpoint first.
-If this curl returns a 404 with a valid API key...
+## CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sarif FILE` | — | SARIF file to triage |
+| `--sarif-dir DIR` | — | Directory of `*.sarif` files to triage |
+| `--scanners LIST` | — | `semgrep`, `github-code-scanning` (alias: `codeql`) |
+| `--github-repo` | — | `owner/repo` — required for `github-code-scanning` |
+| `--github-ref` | — | PR head ref for CodeQL alert lookup |
+| `--baseline REF` | — | Git ref; filters SARIF findings to files changed since this commit |
+| `--backlog` | off | Fetch and triage all open CodeQL alerts (no baseline needed) |
+| `--fail-on MODE` | — | `high-tp` or `any-tp` — exit nonzero when gate is tripped |
+| `--out PREFIX` | `report` | Output prefix → `<prefix>.md` and `<prefix>.json` |
+| `--model NAME` | env | Anthropic model override |
+| `--max N` | 0 (all) | Cap findings triaged (useful while iterating) |
+| `--concurrency K` | 4 | Parallel LLM calls |
+| `--no-reachability` | off | Skip cross-file reachability pass |
+| `--dismiss-fps` | off | Dismiss FP-verdicted CodeQL alerts via API (backlog mode) |
+| `--post-comments` | off | Post per-alert verdict comments (backlog mode) |
+
+## Output
+
+- `<prefix>.json` — array of `{finding, verdict}` objects
+- `<prefix>.md` — human-readable report grouped by verdict (true positive / false positive / needs review)
+
+## Tests
 
 ```bash
-curl -sS \
-  "$AZURE_AI_ENDPOINT/chat/completions?api-version=2024-10-21" \
-  -H "api-key: $AZURE_AI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"'"$AZURE_AI_MODEL"'","messages":[{"role":"user","content":"ping"}],"max_tokens":5}'
+pytest tests/ -v
 ```
-
-...then your resource is a plain Azure OpenAI one - use `azure-openai`. If
-it returns a completion, use `azure`.
-
-### In GitHub Actions
-
-Set the env vars from repo secrets. Example snippet (add to
-`.github/workflows/ai-triage.yml`):
-
-```yaml
-      - name: Run Semgrep + LLM triage on PR changes
-        env:
-          TRIAGE_PROVIDER:      ${{ secrets.TRIAGE_PROVIDER }}       # anthropic | azure | azure-openai
-          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}     # if anthropic
-          ANTHROPIC_MODEL:      ${{ secrets.ANTHROPIC_MODEL }}       # optional
-          AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}     # if azure or azure-openai
-          AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}      # if azure or azure-openai
-          AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}        # if azure or azure-openai
-          AZURE_AI_API_VERSION: ${{ secrets.AZURE_AI_API_VERSION }}  # optional
-        run: |
-          python triage-cli/triage.py . \
-            --baseline "${{ steps.base.outputs.sha }}" \
-            --out report \
-            --fail-on high-tp
-```
-
-Only the vars for the provider you've chosen need to be set; unused ones
-can be empty.
-
-## Run
-
-```bash
-# Triage the Flask seed repo
-python triage.py ../vuln-flask-app --out ../flask-report
-
-# Triage the Node seed repo
-python triage.py ../vuln-node-app --out ../node-report
-
-# Only triage the first 5 findings
-python triage.py ../vuln-flask-app --max 5
-```
-
-Output:
-
-- `<prefix>.json` - structured results (one entry per finding with
-  `{finding, verdict}`).
-- `<prefix>.md` - human-readable summary grouped by verdict.
-
-The first line of CLI output tells you which provider/model was picked:
-
-```
-[triage] provider=anthropic model=claude-sonnet-4-6
-...
-[triage] provider=azure-openai model=gpt-4o
-```
-
-## What to look at in the output
-
-For each seed repo, compare the Markdown summary against the repo's
-`README.md` ground-truth table:
-
-- Every row labeled `TP` should land in "Confirmed vulnerabilities".
-- Rows labeled `FP-trap` should land in "Rejected by AI triage (false
-  positives)" with a rationale that names the allowlist / constant input
-  that makes it safe.
-- `Needs manual review` should be rare - if there are more than a couple,
-  the prompt needs tightening.
-
-## Tunables
-
-| Flag              | Default               | What it does |
-|-------------------|-----------------------|--------------|
-| `--out PREFIX`    | `report`              | Output prefix; produces `.json` and `.md`. |
-| `--model NAME`    | (env / provider)      | Anthropic model override. Ignored for Azure providers - they take their deployment from `AZURE_AI_MODEL`. |
-| `--max N`         | `0` (all)             | Stop after N findings (useful while iterating). |
-| `--concurrency K` | `4`                   | Parallel triage calls. Raise cautiously to respect rate limits. |
-| `--baseline REF`  | none                  | Only triage findings introduced since git ref `REF`. Used in CI. |
-| `--fail-on MODE`  | none                  | Exit nonzero on `any-tp` or `high-tp`. Honors reachability. |
-| `--no-reachability` | off                 | Skip Phase 3 cross-file reachability pass. |
-
-## Known limitations (by design for Phase 1)
-
-- Code context is a +/-15-line window around the sink. Phase 3 already
-  widens to multi-file reachability for true-positive findings.
-- No caching. If you re-run you pay again. Easy addition: hash
-  `(rule_id, file_sha, start, end)` and memoize the verdict.
-- SAST only. Phase 5 adds SCA.
-- The provider abstraction targets chat completions only (no streaming,
-  tools, or vision). That's all Phase 1/3 need; adding a new backend
-  means implementing one `chat()` method in `providers.py`.
