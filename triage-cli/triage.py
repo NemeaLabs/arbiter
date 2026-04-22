@@ -602,7 +602,8 @@ def main() -> int:
                         alert_number=n, **comment_kwargs,
                     )
                     print(f"[comments] #{n} → alert comment  {v.verdict}", file=sys.stderr)
-                except RuntimeError:
+                except RuntimeError as exc:
+                    print(f"[comments] #{n}: alert comment failed: {exc}", file=sys.stderr)
                     if args.summary_issue:
                         try:
                             _codeql.add_alert_comment_to_issue(
@@ -619,8 +620,7 @@ def main() -> int:
                             print(f"[comments] warning: #{n}: {exc2}", file=sys.stderr)
                     else:
                         print(
-                            f"[comments] #{n}: alert comment failed (GHAS required); "
-                            f"pass --summary-issue for fallback",
+                            f"[comments] #{n}: pass --summary-issue for fallback",
                             file=sys.stderr,
                         )
 
