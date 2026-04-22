@@ -329,6 +329,10 @@ jobs:
           repository: ${{ matrix.repo }}
           token: ${{ secrets.TRIAGE_GITHUB_TOKEN }}
 
+      - name: Compute safe artifact name
+        id: meta
+        run: echo "safe=$(echo '${{ matrix.repo }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
       - name: Run Arbiter backlog
         uses: NemeaLabs/arbiter@v1
         env:
@@ -349,7 +353,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: report-${{ matrix.repo }}
+          name: report-${{ steps.meta.outputs.safe }}
           path: arbiter-report.*
 ```
 
