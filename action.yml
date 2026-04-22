@@ -52,7 +52,7 @@ inputs:
     description: 'Base commit SHA to diff against (PR mode)'
     required: false
   scanners:
-    description: 'Comma-separated scanners to run: semgrep, github-code-scanning (alias: codeql). Omit when passing sarif-file/sarif-dir.'
+    description: 'Comma-separated scanner integrations: github-code-scanning (alias: codeql) — fetch alerts from GitHub Code Scanning API. Omit when passing sarif-file/sarif-dir.'
     required: false
     default: ''
   sarif-file:
@@ -122,9 +122,6 @@ runs:
       shell: bash
       run: |
         pip install -r "${{ github.action_path }}/triage-cli/requirements.txt"
-        if [[ "${{ inputs.scanners }}" == *"semgrep"* ]]; then
-          pip install semgrep
-        fi
 
     - name: Configure credentials
       shell: bash

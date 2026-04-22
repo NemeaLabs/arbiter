@@ -47,49 +47,6 @@ CONTEXT_RADIUS = 15  # lines before and after the finding to include
 
 
 # ---------------------------------------------------------------------------
-# Semgrep
-# ---------------------------------------------------------------------------
-
-def run_semgrep(
-    target: pathlib.Path, baseline: Optional[str] = None
-) -> list[dict[str, Any]]:
-    """Run Semgrep free tier and return the parsed findings list.
-
-    If `baseline` is a git ref, Semgrep only reports findings introduced
-    since that commit. This is how CI runs stay cheap and relevant — a PR
-    check should comment on what the PR changed, not on pre-existing debt.
-    """
-    if not target.exists():
-        sys.exit(f"target path does not exist: {target}")
-
-    cmd = ["semgrep", "--config", "auto", "--json", "--quiet"]
-    if baseline:
-        cmd += ["--baseline-commit", baseline]
-    cmd.append(str(target))
-
-    print(f"[semgrep] scanning {target} "
-          f"(baseline={baseline or 'none'}) ...", file=sys.stderr)
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        sys.exit("semgrep not found on PATH. Install with `pip install semgrep`.")
-
-    # Semgrep returns non-zero exit when it finds issues — that's expected.
-    if proc.returncode not in (0, 1):
-        sys.stderr.write(proc.stderr)
-        sys.exit(f"semgrep failed with exit code {proc.returncode}")
-
-    try:
-        data = json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        sys.exit(f"could not parse semgrep JSON: {exc}")
-
-    findings = data.get("results", [])
-    print(f"[semgrep] {len(findings)} finding(s)", file=sys.stderr)
-    return findings
-
-
-# ---------------------------------------------------------------------------
 # Code-context extraction
 # ---------------------------------------------------------------------------
 
@@ -130,7 +87,7 @@ class Finding:
     code_context: str
     language: str
     merged_rule_ids: list[str]  # all rules that fired at (file, line_start, line_end)
-    scanner: str = "semgrep"            # "semgrep" or "codeql"
+    scanner: str = ""
     codeql_alert_number: Optional[int] = None  # set by finding_from_codeql(); None for Semgrep
 
 
@@ -151,26 +108,6 @@ class Verdict:
     def effective_severity(self) -> str:
         """Severity after reachability adjustment, falling back to stage-1."""
         return self.adjusted_severity or self.severity
-
-
-def finding_from_semgrep(raw: dict[str, Any], repo_root: pathlib.Path) -> Finding:
-    path = pathlib.Path(raw["path"])
-    start = int(raw["start"]["line"])
-    end = int(raw["end"]["line"])
-    ext = path.suffix.lower()
-    abs_path = path if path.is_absolute() else (repo_root / path).resolve()
-    rid = str(raw.get("check_id", ""))
-    return Finding(
-        rule_id=rid,
-        rule_message=str((raw.get("extra") or {}).get("message", "")),
-        severity=str((raw.get("extra") or {}).get("severity", "INFO")),
-        file_path=str(path),
-        line_start=start,
-        line_end=end,
-        code_context=code_window(abs_path, start, end),
-        language=LANGUAGE_BY_EXT.get(ext, ""),
-        merged_rule_ids=[rid],
-    )
 
 
 def finding_from_codeql(alert: dict[str, Any], repo_root: pathlib.Path) -> Finding:
@@ -331,9 +268,9 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
     lines.append("# AI Triage Report\n")
 
     # Summary framed around the AI's *actions*, not just verdict counts.
-    _SCANNER_DISPLAY = {"semgrep": "Semgrep", "codeql": "CodeQL"}
-    scanners_used = sorted({f.scanner for f, _ in pairs})
-    scanner_label = " + ".join(_SCANNER_DISPLAY.get(s, s) for s in scanners_used)
+    _SCANNER_DISPLAY = {"codeql": "CodeQL", "github-code-scanning": "GitHub Code Scanning"}
+    scanners_used = sorted({f.scanner for f, _ in pairs if f.scanner})
+    scanner_label = " + ".join(_SCANNER_DISPLAY.get(s, s) for s in scanners_used) if scanners_used else "SAST"
     summary_bits: list[str] = [f"Reviewed **{total}** {scanner_label} finding(s)."]
     if tp:
         summary_bits.append(
@@ -381,8 +318,8 @@ def write_reports(pairs: list[tuple[Finding, Verdict]], out_prefix: pathlib.Path
         for f, v in items:
             lines.append(f"### `{f.rule_id}` — {f.file_path}:{f.line_start}\n")
             if verdict == "false_positive":
-                _SCANNER_DISPLAY = {"semgrep": "Semgrep", "codeql": "CodeQL"}
-                scanner_name = _SCANNER_DISPLAY.get(f.scanner, f.scanner)
+                _SCANNER_DISPLAY = {"codeql": "CodeQL", "github-code-scanning": "GitHub Code Scanning"}
+                scanner_name = _SCANNER_DISPLAY.get(f.scanner, f.scanner or "SAST tool")
                 lines.append(f"- **{scanner_name} flagged:** {f.rule_message}")
                 lines.append(
                     f"- **AI verdict:** false positive "
@@ -462,9 +399,11 @@ def main() -> int:
     ap.add_argument("--no-reachability", action="store_true",
                     help="Skip the Phase 3 reachability pass.")
     ap.add_argument("--scanners", default="",
-                    help="Comma-separated scanners to run: semgrep, "
-                         "github-code-scanning (alias: codeql). "
-                         "Use --sarif / --sarif-dir for any other tool.")
+                    help="Comma-separated scanner integrations: "
+                         "github-code-scanning (alias: codeql) — fetch alerts "
+                         "from the GitHub Code Scanning API. "
+                         "For all other tools, run the scanner yourself and "
+                         "pass the SARIF output via --sarif / --sarif-dir.")
     ap.add_argument("--sarif", default=None, metavar="FILE",
                     help="Path to a SARIF output file to triage (any SAST tool).")
     ap.add_argument("--sarif-dir", default=None, metavar="DIR",
@@ -494,7 +433,7 @@ def main() -> int:
                          "--post-comments is set.")
     args = ap.parse_args()
 
-    # ---- Backlog mode: fetch all open CodeQL alerts, skip Semgrep ----
+    # ---- Backlog mode: fetch all open GitHub Code Scanning alerts ----
     if args.backlog:
         github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
         if not github_token:
@@ -732,12 +671,6 @@ def main() -> int:
                     f"finding(s) in changed files",
                     file=sys.stderr,
                 )
-
-    if "semgrep" in scanners:
-        findings_raw = run_semgrep(target, baseline=args.baseline)
-        if args.max > 0:
-            findings_raw = findings_raw[: args.max]
-        findings.extend(finding_from_semgrep(r, target) for r in findings_raw)
 
     # "github-code-scanning" is the canonical name; "codeql" is a backwards-compat alias.
     if "codeql" in scanners or "github-code-scanning" in scanners:
