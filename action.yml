@@ -16,7 +16,7 @@ inputs:
     required: false
     default: '.'
   github-token:
-    description: 'GitHub token (needs security-events:read, issues:write for backlog)'
+    description: 'GitHub token. PR mode needs pull-requests:write. Backlog mode needs security-events:read (add security-events:write to dismiss FPs).'
     required: true
   github-repo:
     description: 'Repository as owner/repo (defaults to current repo)'
@@ -28,7 +28,7 @@ inputs:
     description: 'Anthropic API key'
     required: false
   triage-provider:
-    description: 'LLM provider: anthropic (default) or azure'
+    description: 'LLM provider: anthropic (default), azure (Azure AI Foundry), or azure-openai (Azure OpenAI Service)'
     required: false
     default: 'anthropic'
   anthropic-model:
@@ -65,7 +65,7 @@ inputs:
     description: 'PR head ref for CodeQL alert lookup (e.g. refs/pull/N/head)'
     required: false
   fail-on:
-    description: 'Fail the step when findings match: any-tp or high-tp'
+    description: 'Exit nonzero to block the merge when: any-tp = any true positive found; high-tp = true positive with high/critical severity and confidence ≥ 0.8'
     required: false
 
   # Backlog mode
@@ -78,7 +78,7 @@ inputs:
     required: false
     default: 'false'
   post-comments:
-    description: 'Post per-alert verdict comments on the summary issue'
+    description: 'Post a verdict comment directly on each GitHub Code Scanning alert (falls back to summary-issue if GHAS is not available)'
     required: false
     default: 'false'
   summary-issue:

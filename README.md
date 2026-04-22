@@ -59,7 +59,6 @@ jobs:
           TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          mode: pr
           github-token: ${{ secrets.GITHUB_TOKEN }}
           sarif-file: semgrep.sarif
           baseline: ${{ github.event.pull_request.base.sha }}
@@ -74,7 +73,7 @@ jobs:
 
 | Input | Description |
 |-------|-------------|
-| `github-token` | GitHub token — needs `pull-requests: write` for PR comments |
+| `github-token` | GitHub token. PR mode needs `pull-requests: write`. Backlog mode needs `security-events: read` (add `security-events: write` to auto-dismiss FPs). |
 
 ### Scanner input (one required in PR mode)
 
@@ -178,6 +177,8 @@ env:
 
 ### Trivy (filesystem scan)
 
+Trivy doesn't support baseline diffing, so it scans the full tree. Arbiter's `baseline` input post-filters the findings to files changed in the PR, keeping the report focused on what the PR introduced.
+
 ```yaml
       - name: Run Trivy
         uses: aquasecurity/trivy-action@v0.35.0
@@ -194,7 +195,6 @@ env:
           TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          mode: pr
           github-token: ${{ secrets.GITHUB_TOKEN }}
           sarif-file: trivy.sarif
           baseline: ${{ github.event.pull_request.base.sha }}
@@ -202,6 +202,8 @@ env:
 ```
 
 ### GitHub Code Scanning / CodeQL
+
+This mode pulls alerts directly from the GitHub Code Scanning API for the PR head ref — no SARIF file needed. Requires CodeQL (or another scanner) to already be uploading results to GitHub Code Scanning on this repo.
 
 ```yaml
       - name: Run Arbiter
@@ -211,7 +213,6 @@ env:
           TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          mode: pr
           github-token: ${{ secrets.GITHUB_TOKEN }}
           scanners: github-code-scanning
           github-ref: refs/pull/${{ github.event.pull_request.number }}/head
@@ -372,7 +373,6 @@ You can also trigger a one-off run manually from the Actions tab and override th
           TRIAGE_PROVIDER:   ${{ secrets.TRIAGE_PROVIDER }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          mode: pr
           github-token: ${{ secrets.GITHUB_TOKEN }}
           sarif-dir: .        # picks up *.sarif in the workspace root
           baseline: ${{ github.event.pull_request.base.sha }}
