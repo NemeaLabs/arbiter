@@ -1,5 +1,7 @@
 # Arbiter
 
+> **Data handling:** Arbiter sends code snippets from your repository to the LLM provider you configure (Anthropic or Azure). No data passes through NemeaLabs. Ensure your organization's policies permit sending source code to your chosen provider before use. See [Data handling](#data-handling) for details.
+
 AI-powered SAST triage as a GitHub Actions composite action. Run any SAST scanner, pass its SARIF output to Arbiter, and get AI verdicts (true positive / false positive / needs review) posted as a PR comment — with an optional build gate that blocks merges on high-confidence vulnerabilities.
 
 ## How it works
