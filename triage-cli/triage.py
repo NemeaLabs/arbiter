@@ -215,6 +215,15 @@ SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "ERROR": 3, "WARNING": 2,
                  "MEDIUM": 2, "LOW": 1, "INFO": 0}
 
 
+def _get_changed_files(baseline: str) -> set[str]:
+    """Return paths of files changed between baseline and HEAD."""
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", baseline, "HEAD"],
+        capture_output=True, text=True, check=False,
+    )
+    return set(proc.stdout.strip().splitlines())
+
+
 def dedupe_findings(findings: list[Finding]) -> list[Finding]:
     """Collapse findings at the same (file, line_start, line_end) into one.
 
@@ -452,8 +461,13 @@ def main() -> int:
     ap.add_argument("--no-reachability", action="store_true",
                     help="Skip the Phase 3 reachability pass.")
     ap.add_argument("--scanners", default="semgrep",
-                    help="Comma-separated scanners to run: semgrep, codeql "
-                         "(default: semgrep).")
+                    help="Comma-separated scanners to run: semgrep, "
+                         "github-code-scanning (alias: codeql) "
+                         "(default: semgrep). Use --sarif for any other tool.")
+    ap.add_argument("--sarif", default=None, metavar="FILE",
+                    help="Path to a SARIF output file to triage (any SAST tool).")
+    ap.add_argument("--sarif-dir", default=None, metavar="DIR",
+                    help="Directory containing *.sarif files to triage.")
     ap.add_argument("--github-repo", default=None,
                     help="GitHub repo as 'owner/repo'. Required for --scanners codeql.")
     ap.add_argument("--github-ref", default=None,
@@ -684,13 +698,42 @@ def main() -> int:
     target = args.target.resolve()
     findings: list[Finding] = []
 
+    # ---- SARIF file / directory input ----
+    if args.sarif or args.sarif_dir:
+        import sarif as _sarif
+        sarif_files: list[pathlib.Path] = []
+        if args.sarif:
+            sarif_files.append(pathlib.Path(args.sarif))
+        if args.sarif_dir:
+            sarif_files.extend(sorted(pathlib.Path(args.sarif_dir).glob("*.sarif")))
+        for sf in sarif_files:
+            parsed = _sarif.sarif_to_findings(sf, target)
+            print(f"[sarif] {sf.name}: {len(parsed)} finding(s)", file=sys.stderr)
+            findings.extend(parsed)
+        # Post-filter to files changed in the diff when a baseline is provided.
+        if args.baseline and findings:
+            changed = _get_changed_files(args.baseline)
+            before_filter = len(findings)
+            findings = [
+                f for f in findings
+                if f.file_path in changed
+                or pathlib.Path(f.file_path).name in {pathlib.Path(c).name for c in changed}
+            ]
+            if before_filter != len(findings):
+                print(
+                    f"[sarif] baseline filter: {before_filter} → {len(findings)} "
+                    f"finding(s) in changed files",
+                    file=sys.stderr,
+                )
+
     if "semgrep" in scanners:
         findings_raw = run_semgrep(target, baseline=args.baseline)
         if args.max > 0:
             findings_raw = findings_raw[: args.max]
         findings.extend(finding_from_semgrep(r, target) for r in findings_raw)
 
-    if "codeql" in scanners:
+    # "github-code-scanning" is the canonical name; "codeql" is a backwards-compat alias.
+    if "codeql" in scanners or "github-code-scanning" in scanners:
         github_token = args.github_token or os.environ.get("GITHUB_TOKEN")
         if not github_token:
             sys.exit(

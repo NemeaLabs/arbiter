@@ -3,6 +3,8 @@ flask-report.*
 node-report.*
 report.*
 *.sarif
+# Keep test fixtures
+!triage-cli/tests/fixtures/*.sarif
 
 # Python
 __pycache__/

@@ -1,0 +1,71 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Trivy",
+          "version": "0.50.0",
+          "rules": [
+            {
+              "id": "PY-SECRET-001",
+              "shortDescription": { "text": "Hardcoded secret detected" },
+              "properties": { "security-severity": "8.1" }
+            },
+            {
+              "id": "PY-SQLI-001",
+              "shortDescription": { "text": "SQL injection via string concatenation" },
+              "properties": { "security-severity": "7.5" }
+            },
+            {
+              "id": "PY-INFO-001",
+              "shortDescription": { "text": "Debug flag enabled" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "PY-SECRET-001",
+          "level": "error",
+          "message": { "text": "Hardcoded API key found in source code" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app.py" },
+                "region": { "startLine": 10, "endLine": 10 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "PY-SQLI-001",
+          "level": "error",
+          "message": { "text": "SQL query built with user-controlled string concatenation" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "db.py" },
+                "region": { "startLine": 42, "endLine": 43 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "PY-INFO-001",
+          "level": "warning",
+          "message": { "text": "Flask debug mode is enabled" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app.py" },
+                "region": { "startLine": 5, "endLine": 5 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

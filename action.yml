@@ -52,9 +52,15 @@ inputs:
     description: 'Base commit SHA to diff against (PR mode)'
     required: false
   scanners:
-    description: 'Comma-separated scanners to run: semgrep, codeql'
+    description: 'Comma-separated scanners to run: semgrep, github-code-scanning (alias: codeql). Use sarif-file for any other tool.'
     required: false
     default: 'semgrep'
+  sarif-file:
+    description: 'Path to a SARIF output file to triage (any SAST tool: Trivy, Bandit, Snyk, Checkov, gosec, ESLint, etc.)'
+    required: false
+  sarif-dir:
+    description: 'Directory containing *.sarif files to triage'
+    required: false
   github-ref:
     description: 'PR head ref for CodeQL alert lookup (e.g. refs/pull/N/head)'
     required: false
@@ -155,6 +161,8 @@ runs:
           [[ -n "${{ inputs.baseline }}"   ]] && ARGS+=("--baseline"    "${{ inputs.baseline }}")
           [[ -n "${{ inputs.github-ref }}" ]] && ARGS+=("--github-ref"  "${{ inputs.github-ref }}")
           [[ -n "${{ inputs.fail-on }}"    ]] && ARGS+=("--fail-on"     "${{ inputs.fail-on }}")
+          [[ -n "${{ inputs.sarif-file }}" ]] && ARGS+=("--sarif"       "${{ inputs.sarif-file }}")
+          [[ -n "${{ inputs.sarif-dir }}"  ]] && ARGS+=("--sarif-dir"   "${{ inputs.sarif-dir }}")
         fi
 
         [[ "${{ inputs.no-reachability }}" == "true" ]] && ARGS+=("--no-reachability")
