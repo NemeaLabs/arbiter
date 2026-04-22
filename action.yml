@@ -1,5 +1,5 @@
-name: 'Arbiter'
-description: 'AI-powered SAST finding triage with reachability analysis'
+name: 'Arbiter SAST Triage by NemeaLabs'
+description: 'AI-powered SAST finding triage with reachability analysis. Pass any SARIF file, get true/false positive verdicts posted as a PR comment.'
 author: 'NemeaLabs'
 
 branding:
