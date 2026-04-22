@@ -356,6 +356,17 @@ pytest triage-cli/tests/ -v
 
 ---
 
+## Data handling
+
+Arbiter sends code snippets (file paths, line numbers, and surrounding source code) from your repository to the LLM provider you configure — Anthropic or Azure. No data is sent to NemeaLabs or any third party beyond your chosen provider.
+
+- **Anthropic:** subject to [Anthropic's usage policies](https://www.anthropic.com/legal/usage-policy).
+- **Azure AI / Azure OpenAI:** subject to your Azure subscription's data processing terms.
+
+Ensure your organization's data handling and code confidentiality policies permit sending source code to your chosen provider before enabling this action.
+
+---
+
 ## License
 
 MIT
