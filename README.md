@@ -80,7 +80,7 @@ jobs:
 |-------|-------------|
 | `sarif-file` | Path to a single SARIF file from any scanner |
 | `sarif-dir` | Directory of `*.sarif` files (all are merged) |
-| `scanners` | `github-code-scanning` — pull alerts from the GitHub Code Scanning API (CodeQL). Can combine with SARIF inputs. |
+| `scanners` | `github-code-scanning` — pull alerts from the GitHub Code Scanning API (CodeQL). |
 
 ### PR mode options
 

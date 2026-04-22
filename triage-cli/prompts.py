@@ -1,7 +1,7 @@
-"""Prompts for the Claude-backed Semgrep triage agent."""
+"""Prompts for the AI-backed SAST triage agent."""
 
 SYSTEM_PROMPT = """You are an application security engineer triaging a static
-analysis (SAST) finding produced by Semgrep on a real source file.
+analysis (SAST) finding on a real source file.
 
 Your job is to produce one structured verdict per finding. You must reason
 like a human reviewer: a Semgrep rule fires on pattern, but whether the code
@@ -48,8 +48,8 @@ Do not include any text outside the JSON object. No markdown fences.
 """
 
 
-USER_TEMPLATE = """Semgrep finding
----------------
+USER_TEMPLATE = """SAST finding
+------------
 Rule ID: {rule_id}
 Rule message: {rule_message}
 Default severity: {severity}

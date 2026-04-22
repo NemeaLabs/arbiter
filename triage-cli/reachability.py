@@ -4,10 +4,10 @@ For each finding that Phase 1 classified as a true positive, walk the
 caller graph upward (up to a fixed depth) and ask the LLM whether untrusted
 input can actually reach the sink.
 
-This is where AI earns its keep over raw Semgrep: Semgrep's free tier does
-per-file pattern matching, so it can't tell you that a vulnerable function
-in `utils.py` is (a) called from a route handler that passes user input, or
-(b) not called from anywhere at all and is therefore dead code.
+This is where AI earns its keep over static pattern matching: SAST tools
+work per-file and can't tell you that a vulnerable function in `utils.py`
+is (a) called from a route handler that passes user input, or (b) not
+called from anywhere at all and is therefore dead code.
 
 The analysis is deliberately lightweight:
   - Caller discovery uses regex on the source files (no AST).
