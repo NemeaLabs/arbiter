@@ -80,29 +80,29 @@ jobs:
 |-------|-------------|
 | `sarif-file` | Path to a single SARIF file from any scanner |
 | `sarif-dir` | Directory of `*.sarif` files (all are merged) |
-| `scanners` | `github-code-scanning` to pull alerts from GitHub Code Scanning API (CodeQL). Can combine with SARIF inputs. |
+| `scanners` | `github-code-scanning` — pull alerts from the GitHub Code Scanning API (CodeQL). Can combine with SARIF inputs. |
 
 ### PR mode options
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `mode` | `pr` | Run mode: `pr` or `backlog` |
-| `baseline` | — | Base commit SHA to diff against; filters SARIF findings to changed files only |
-| `fail-on` | — | `high-tp` — fail the step when a high/critical true positive with confidence ≥ 0.8 is found. `any-tp` — fail on any true positive |
-| `github-ref` | — | PR head ref (e.g. `refs/pull/N/head`). Required for `scanners: github-code-scanning` |
+| `baseline` | — | Base commit SHA; filters SARIF findings to files changed in this PR |
+| `fail-on` | — | `high-tp` — fail when a high/critical true positive with confidence ≥ 0.8 is found. `any-tp` — fail on any true positive. |
+| `github-ref` | — | PR head ref (e.g. `refs/pull/N/head`). Required for `scanners: github-code-scanning`. |
 
 ### Backlog mode options
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `post-comments` | `false` | Post per-alert triage comments directly on GitHub Code Scanning alerts |
+| `post-comments` | `false` | Post per-alert triage comments on GitHub Code Scanning alerts |
 | `dismiss-fps` | `false` | Auto-dismiss false-positive CodeQL alerts (requires `security-events: write`) |
 | `skip-alerts` | — | Comma-separated alert numbers to skip (already triaged) |
 | `summary-issue` | — | Issue number for fallback per-alert comments |
 
 ### LLM provider
 
-Pass credentials via `env:` on the `uses:` step (see examples below).
+Pass credentials via `env:` on the `uses:` step (see provider setup below).
 
 | Env var | Description |
 |---------|-------------|
@@ -152,10 +152,10 @@ Use when your endpoint is `https://<project>.services.ai.azure.com/models`.
 
 ```yaml
 env:
-  TRIAGE_PROVIDER:      azure
-  AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
-  AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
-  AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+  TRIAGE_PROVIDER:   azure
+  AZURE_AI_ENDPOINT: ${{ secrets.AZURE_AI_ENDPOINT }}
+  AZURE_AI_API_KEY:  ${{ secrets.AZURE_AI_API_KEY }}
+  AZURE_AI_MODEL:    ${{ secrets.AZURE_AI_MODEL }}
 ```
 
 ### Azure OpenAI
@@ -164,10 +164,10 @@ Use when your endpoint ends in `.openai.azure.com`.
 
 ```yaml
 env:
-  TRIAGE_PROVIDER:      azure-openai
-  AZURE_AI_ENDPOINT:    ${{ secrets.AZURE_AI_ENDPOINT }}
-  AZURE_AI_API_KEY:     ${{ secrets.AZURE_AI_API_KEY }}
-  AZURE_AI_MODEL:       ${{ secrets.AZURE_AI_MODEL }}
+  TRIAGE_PROVIDER:   azure-openai
+  AZURE_AI_ENDPOINT: ${{ secrets.AZURE_AI_ENDPOINT }}
+  AZURE_AI_API_KEY:  ${{ secrets.AZURE_AI_API_KEY }}
+  AZURE_AI_MODEL:    ${{ secrets.AZURE_AI_MODEL }}
 ```
 
 ---
@@ -287,13 +287,72 @@ Set these under **Settings → Secrets and variables → Actions** in your repo:
 
 | Secret | When required |
 |--------|---------------|
-| `TRIAGE_PROVIDER` | Always (set to `anthropic`, `azure`, or `azure-openai`) |
+| `TRIAGE_PROVIDER` | Always (`anthropic`, `azure`, or `azure-openai`) |
 | `ANTHROPIC_API_KEY` | When `TRIAGE_PROVIDER=anthropic` |
 | `AZURE_AI_ENDPOINT` | When using Azure |
 | `AZURE_AI_API_KEY` | When using Azure |
 | `AZURE_AI_MODEL` | When using Azure |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions — no secret needed.
+
+---
+
+## Local usage
+
+To run the triage CLI directly without GitHub Actions:
+
+```bash
+cd triage-cli
+pip install -r requirements.txt
+
+# Set your provider credentials
+export TRIAGE_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Run your scanner first
+semgrep scan --config auto --sarif --output semgrep.sarif /path/to/repo
+
+# Triage the SARIF output
+python triage.py /path/to/repo --sarif semgrep.sarif --out report
+cat report.md
+```
+
+To triage GitHub Code Scanning alerts directly (no local scanner):
+
+```bash
+export GITHUB_TOKEN=ghp_...
+python triage.py /path/to/repo \
+  --scanners github-code-scanning \
+  --github-repo owner/repo \
+  --out report
+```
+
+### CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sarif FILE` | — | SARIF file to triage |
+| `--sarif-dir DIR` | — | Directory of `*.sarif` files to triage |
+| `--scanners LIST` | — | `github-code-scanning` (alias: `codeql`) |
+| `--github-repo` | — | `owner/repo` — required for `github-code-scanning` |
+| `--github-ref` | — | PR head ref for CodeQL alert lookup |
+| `--github-token` | env | GitHub token (defaults to `GITHUB_TOKEN` env var) |
+| `--baseline REF` | — | Git ref; filters SARIF findings to files changed since this commit |
+| `--backlog` | off | Fetch and triage all open CodeQL alerts (no baseline needed) |
+| `--fail-on MODE` | — | `high-tp` or `any-tp` — exit nonzero when gate trips |
+| `--out PREFIX` | `report` | Output prefix → `<prefix>.md` and `<prefix>.json` |
+| `--model NAME` | env | Anthropic model override |
+| `--max N` | 0 (all) | Cap findings triaged |
+| `--concurrency K` | 4 | Parallel LLM calls |
+| `--no-reachability` | off | Skip cross-file reachability pass |
+| `--dismiss-fps` | off | Dismiss FP CodeQL alerts via API (backlog mode) |
+| `--post-comments` | off | Post per-alert verdict comments (backlog mode) |
+
+### Running tests
+
+```bash
+pytest triage-cli/tests/ -v
+```
 
 ---
 
